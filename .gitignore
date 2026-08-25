@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+backend/data/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+.DS_Store
+.worktrees/
+data/llm-settings.json
+data/token-usage.jsonl
+data/stage1-audit.jsonl
+backend/logs/*

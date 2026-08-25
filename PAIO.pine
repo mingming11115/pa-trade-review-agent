@@ -1,0 +1,336 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fengyangsi
+//@version=6
+
+indicator(title = 'Price Action All In One', shorttitle = 'PAIO', overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+const color default_u_color = #089981
+const color default_d_color = #F23645
+////Gap Series
+gs_display(int left, top, int right, bottom, color bgcolor) =>
+    box.new(left, top, right, bottom, border_width = 0, bgcolor = bgcolor)
+//Open
+gs_open_use     = input.bool(defval = true, title = 'Open', inline = 'gs_open_inline', group = 'Gap Series')
+gs_open_u_color = input.color(defval = color.new(default_u_color, 40), title = '↑', inline = 'gs_open_inline', group = 'Gap Series')
+gs_open_d_color = input.color(defval = color.new(default_d_color, 40), title = '↓', tooltip = 'Opening Gap', inline = 'gs_open_inline', group = 'Gap Series')
+bool gs_open_u_alert = false
+bool gs_open_d_alert = false
+if low > high[1]
+    gs_open_u_alert := true
+    if gs_open_use
+        gs_display(bar_index[1], high[1], bar_index, low, gs_open_u_color)
+else if high < low[1]
+    gs_open_d_alert := true
+    if gs_open_use
+        gs_display(bar_index[1], low[1], bar_index, high, gs_open_d_color)
+alertcondition(gs_open_u_alert, 'PAIO:GS:Gap Up(Open)',   'Bullish Opening Gap!')
+alertcondition(gs_open_d_alert, 'PAIO:GS:Gap Down(Open)', 'Bearish Opening Gap!')
+//wick
+gs_wick_use     = input.bool(defval = true, title = 'wick', inline = 'gs_wick_inline', group = 'Gap Series')
+gs_wick_u_color = input.color(defval = color.new(default_u_color, 60), title = '↑', inline = 'gs_wick_inline', group = 'Gap Series')
+gs_wick_d_color = input.color(defval = color.new(default_d_color, 60), title = '↓', inline = 'gs_wick_inline', group = 'Gap Series')
+gs_wick_except_open = input.bool(defval = true, title = 'Except Open', inline = 'gs_wick_inline', tooltip = 'Wick-to-Wick Gap\nExclude Opening Gap', group = 'Gap Series')
+bool gs_wick_u_alert = false
+bool gs_wick_d_alert = false
+if low > high[2]
+    gs_wick_u_alert := true
+    if gs_wick_use and ((gs_wick_except_open and not gs_open_u_alert and not gs_open_u_alert[1]) or not gs_wick_except_open)
+        gs_display(bar_index[2], high[2], bar_index, low, gs_wick_u_color)
+else if high < low[2]
+    gs_wick_d_alert := true
+    if gs_wick_use and ((gs_wick_except_open and not gs_open_d_alert and not gs_open_d_alert[1]) or not gs_wick_except_open)
+        gs_display(bar_index[2], low[2], bar_index, high, gs_wick_d_color)
+alertcondition(gs_wick_u_alert, 'PAIO:GS:Gap Up(Wick)',   'Bullish Wick Gap!')
+alertcondition(gs_wick_d_alert, 'PAIO:GS:Gap Down(Wick)', 'Bearish Wick Gap!')
+//Body
+gs_body_use     = input.bool(defval = true, title = 'Body', inline = 'gs_body_inline', group = 'Gap Series')
+gs_body_u_color = input.color(defval = color.new(default_u_color, 80), title = '↑', inline = 'gs_body_inline', group = 'Gap Series')
+gs_body_d_color = input.color(defval = color.new(default_d_color, 80), title = '↓', inline = 'gs_body_inline', group = 'Gap Series')
+gs_body_except_open = input.bool(defval = true, title = 'Except Open', inline = 'gs_body_inline', group = 'Gap Series')
+gs_body_except_wick = input.bool(defval = true, title = 'Except wick', inline = 'gs_body_inline', tooltip = 'Real Body Gap\nExclude Opening Gap\nExclude Wick Gap', group = 'Gap Series')
+bool gs_body_u_alert = false
+bool gs_body_d_alert = false
+gs_body_high = math.max(open, close)
+gs_body_low  = math.min(open, close)
+if gs_body_low > gs_body_high[2]
+    gs_body_u_alert := true
+    if gs_body_use and ((gs_body_except_open and not gs_open_u_alert and not gs_open_u_alert[1]) or not gs_body_except_open) and ((gs_body_except_wick and not gs_wick_u_alert) or not gs_body_except_wick)
+        gs_display(bar_index[2], gs_body_high[2], bar_index, gs_body_low, gs_body_u_color)
+else if gs_body_high < gs_body_low[2]
+    gs_body_d_alert := true
+    if gs_body_use and ((gs_body_except_open and not gs_wick_d_alert and not gs_open_d_alert) or not gs_body_except_open) and ((gs_body_except_wick and not gs_open_d_alert[1]) or not gs_body_except_wick)
+        gs_display(bar_index[2], gs_body_low[2], bar_index, gs_body_high, gs_body_d_color)
+alertcondition(gs_body_u_alert, 'PAIO:GS:Gap Up(Body)',   'Bullish Body Gap!')
+alertcondition(gs_body_d_alert, 'PAIO:GS:Gap Down(Body)', 'Bearish Body Gap!')
+////Bar Index
+bi_use = input.bool(defval = true, title = 'Bar Index', inline = 'bi_inline_1', group = 'Bar Index')
+bi_size = input.string(defval = size.normal, title = 'Size', options = [size.auto, size.tiny, size.small, size.normal, size.large, size.huge], inline = 'bi_inline_1', group = 'Bar Index', display = display.none)
+bi_color = input.color(defval = color.orange, title = '', tooltip = 'Show Bar Numbers', inline = 'bi_inline_1', group = 'Bar Index')
+bi_timeframe = input.timeframe(defval = '1D', title = 'Timeframe', inline = 'bi_inline_2', group = 'Bar Index', display = display.none)
+bi_from = input.int(defval = 0, minval = 0, title = 'From', inline = 'bi_inline_2', group = 'Bar Index', display = display.none)
+bc_length = input.int(defval = 999, minval = 0, title = 'Length', tooltip = 'Counter Reset Cycle', inline = 'bi_inline_2', group = 'Bar Index', display = display.none)
+bi_step = input.int(defval = 2, minval = 0, title = 'Step', inline = 'bi_inline_3', group = 'Bar Index', display = display.none)
+bi_offset = input.int(defval = 0, title = 'Offset', inline = 'bi_inline_3', group = 'Bar Index', display = display.none)
+bi_specific = input.string(defval = "0,1", title = "Specific Bars", tooltip = 'Specific Bar to Show', inline = 'bi_inline_3', group = 'Bar Index', display = display.none)
+var int bi_index = 0
+bi_index += 1
+if time(bi_timeframe) != time(bi_timeframe, 1)
+    bi_index := 1
+if bi_use and (bi_index > bi_from and bi_index - bi_from <= bc_length and (bi_index - bi_from - bi_offset) % (bi_step + 1) == 0) or array.includes(str.split(bi_specific, ','), str.tostring(bi_index - bi_from))
+    label.new(x = bar_index, y = 0, text = str.tostring(bi_index - bi_from), yloc = yloc.belowbar, style = label.style_none, textcolor = bi_color, size = bi_size)
+alertcondition(array.includes(str.split(bi_specific,','),str.tostring(bi_index - bi_from)), "PAIO:BI:Specific Bar Reached", "Specific Bar Reached")
+////Moving Average
+//1st EMA
+ma_1_use =       input.bool(defval = true, title = '1st EMA', inline = 'ma_1_1', group = 'Moving Average')
+ma_1_length =    input.int(defval = 20, minval = 0, title = 'Length', inline = 'ma_1_1', group = 'Moving Average', display = display.none)
+ma_1_offset =    input.int(defval = 0, title = 'Offset', inline = 'ma_1_1', group = 'Moving Average', display = display.none)
+ma_1_timeframe = input.timeframe(defval = '', title = 'Timeframe', inline = 'ma_1_2', group = 'Moving Average', display = display.none)
+ma_1_source =    input.source(defval = close, title = 'Source', inline = 'ma_1_2', group = 'Moving Average', display = display.none)
+ma_1_request  = request.security(symbol = syminfo.tickerid, timeframe = ma_1_timeframe, expression = ta.ema(ma_1_source, ma_1_length), gaps = barmerge.gaps_on)
+var float ma_1_last = na
+var float ma_1_value = na
+if na(ma_1_request)
+    ma_1_value := (ma_1_source - ma_1_last) * (2 / (ma_1_length + 1)) + ma_1_last
+else
+    ma_1_value := ma_1_request
+    ma_1_last := ma_1_value
+plot(series = ma_1_use ? ma_1_value : na, title = '1st EMA', color = color.orange, linewidth = 2, style = plot.style_line, offset = ma_1_offset)
+//2nd EMA
+ma_2_use =       input.bool(defval = true, title = '2nd EMA', inline = 'ma_2_1', group = 'Moving Average')
+ma_2_length =    input.int(defval = 20, minval = 0, title = 'Length', inline = 'ma_2_1', group = 'Moving Average', display = display.none)
+ma_2_offset =    input.int(defval = 0, title = 'Offset', inline = 'ma_2_1', group = 'Moving Average', display = display.none)
+ma_2_timeframe = input.timeframe(defval = '15', title = 'Timeframe', inline = 'ma_2_2', group = 'Moving Average', display = display.none)
+ma_2_source =    input.source(defval = close, title = 'Source', inline = 'ma_2_2', group = 'Moving Average', display = display.none)
+ma_2_request  = request.security(symbol = syminfo.tickerid, timeframe = ma_2_timeframe, expression = ta.ema(ma_2_source, ma_2_length), gaps = barmerge.gaps_on)
+var float ma_2_last = na
+var float ma_2_value = na
+if na(ma_2_request)
+    ma_2_value := (ma_2_source - ma_2_last) * (2 / (ma_2_length + 1)) + ma_2_last
+else
+    ma_2_value := ma_2_request
+    ma_2_last := ma_2_value
+plot(series = ma_2_use ? ma_2_value : na, title = '2nd EMA', color = color.orange, linewidth = 2, style = plot.style_circles, offset = ma_2_offset)
+//3rd EMA
+ma_3_use =       input.bool(defval = true, title = '3rd EMA', inline = 'ma_3_1', group = 'Moving Average', display = display.none)
+ma_3_length =    input.int(defval = 20, minval = 0, title = 'Length', inline = 'ma_3_1', group = 'Moving Average', display = display.none)
+ma_3_offset =    input.int(defval = 0, title = 'Offset', inline = 'ma_3_1', group = 'Moving Average', display = display.none)
+ma_3_timeframe = input.timeframe(defval = '60', title = 'Timeframe', inline = 'ma_3_2', group = 'Moving Average', display = display.none)
+ma_3_source =    input.source(defval = close, title = 'Source', inline = 'ma_3_2', group = 'Moving Average', display = display.none)
+ma_3_request  = request.security(symbol = syminfo.tickerid, timeframe = ma_3_timeframe, expression = ta.ema(ma_3_source, ma_3_length), gaps = barmerge.gaps_on)
+var float ma_3_last = na
+var float ma_3_value = na
+if na(ma_3_request)
+    ma_3_value := (ma_3_source - ma_3_last) * (2 / (ma_3_length + 1)) + ma_3_last
+else
+    ma_3_value := ma_3_request
+    ma_3_last := ma_3_value
+plot(series = ma_3_use ? ma_3_value : na, title = '3rd EMA', color = color.orange, linewidth = 2, style = plot.style_line, offset = ma_3_offset)
+
+//Previous Values | Support RTH now
+pvDisplay   = input.string(defval = 'All', title = 'Display', options = ['Today', 'TimeFrame', 'All'], group = 'Previous Values')
+pvBaseChart = input.bool(defval = true, title = 'Base On Chart', tooltip = 'You can set this and use RTH Chart', group = 'Previous Values')
+pvLineDraw  = input.bool(defval = true, title = 'Draw By Line', tooltip = 'Use line instead of plot', group = 'Previous Values')
+pv1stUse    = input.bool(defval = true, title = '1st', inline = 'pv1st', group = 'Previous Values')
+pv1stTF     = input.timeframe(defval = '1D', title = 'TimeFrame', inline = 'pv1st', group = 'Previous Values')
+pv1stSource = input.string(defval = 'close', title = 'Source', options = ['close', 'high', 'low', 'open', 'hl/2', 'hlc3', 'ohlc/4', 'hlcc/4', 'CurrentOpen'], inline = 'pv1st', group = 'Previous Values')
+pv1stColor  = input.color(defval = #434651, title = 'Color', inline = 'pv1st', group = 'Previous Values')
+pv1stLine   = input.string(defval = line.style_dotted, title = 'Line Style', options = [line.style_solid, line.style_dotted, line.style_dashed, line.style_arrow_left, line.style_arrow_right, line.style_arrow_both], inline = 'pv1st', group = 'Previous Values')
+pv1stWidth  = input.int(defval = 1, title = 'Width', inline = 'pv1st', group = 'Previous Values')
+pv2ndUse    = input.bool(defval = true, title = '2nd', inline = 'pv2nd', group = 'Previous Values')
+pv2ndTF     = input.timeframe(defval = '1D', title = 'TimeFrame', inline = 'pv2nd', group = 'Previous Values')
+pv2ndSource = input.string(defval = 'high', title = 'Source', options = ['close', 'high', 'low', 'open', 'hl/2', 'hlc3', 'ohlc/4', 'hlcc/4', 'CurrentOpen'], inline = 'pv2nd', group = 'Previous Values')
+pv2ndColor  = input.color(defval = #F23645, title = 'Color', inline = 'pv2nd', group = 'Previous Values')
+pv2ndLine   = input.string(defval = line.style_dashed, title = 'Line Style', options = [line.style_solid, line.style_dotted, line.style_dashed, line.style_arrow_left, line.style_arrow_right, line.style_arrow_both], inline = 'pv2nd', group = 'Previous Values')
+pv2ndWidth  = input.int(defval = 1, title = 'Width', inline = 'pv2nd', group = 'Previous Values')
+pv3rdUse    = input.bool(defval = true, title = '3rd', inline = 'pv3rd', group = 'Previous Values')
+pv3rdTF     = input.timeframe(defval = '1D', title = 'TimeFrame', inline = 'pv3rd', group = 'Previous Values')
+pv3rdSource = input.string(defval = 'low', title = 'Source', options = ['close', 'high', 'low', 'open', 'hl/2', 'hlc3', 'ohlc/4', 'hlcc/4', 'CurrentOpen'], inline = 'pv3rd', group = 'Previous Values')
+pv3rdColor  = input.color(defval = #089981, title = 'Color', inline = 'pv3rd', group = 'Previous Values')
+pv3rdLine   = input.string(defval = line.style_dashed, title = 'Line Style', options = [line.style_solid, line.style_dotted, line.style_dashed, line.style_arrow_left, line.style_arrow_right, line.style_arrow_both], inline = 'pv3rd', group = 'Previous Values')
+pv3rdWidth  = input.int(defval = 1, title = 'Width', inline = 'pv3rd', group = 'Previous Values')
+
+var float pvLast1stO = na
+var float pvLast1stH = na
+var float pvLast1stL = na
+var float pvLast1stC = na
+var float pvCurrent1stH = na
+var float pvCurrent1stL = na
+var float pvCurrent1stO = na
+if time(pv1stTF) != time(pv1stTF, 1)
+    pvLast1stO := pvCurrent1stO
+    pvCurrent1stO := open
+    pvLast1stC := close[1]
+    pvLast1stH := pvCurrent1stH
+    pvLast1stL := pvCurrent1stL
+    pvCurrent1stH := na
+    pvCurrent1stL := na
+pvCurrent1stH := na(pvCurrent1stH) ? high : math.max(high, pvCurrent1stH)
+pvCurrent1stL := na(pvCurrent1stL) ? low : math.min(low, pvCurrent1stL)
+
+var float pvLast2ndO = na
+var float pvLast2ndH = na
+var float pvLast2ndL = na
+var float pvLast2ndC = na
+var float pvCurrent2ndH = na
+var float pvCurrent2ndL = na
+var float pvCurrent2ndO = na
+if time(pv2ndTF) != time(pv2ndTF, 1)
+    pvLast2ndO := pvCurrent2ndO
+    pvCurrent2ndO := open
+    pvLast2ndC := close[1]
+    pvLast2ndH := pvCurrent2ndH
+    pvLast2ndL := pvCurrent2ndL
+    pvCurrent2ndH := na
+    pvCurrent2ndL := na
+pvCurrent2ndH := na(pvCurrent2ndH) ? high : math.max(high, pvCurrent2ndH)
+pvCurrent2ndL := na(pvCurrent2ndL) ? low : math.min(low, pvCurrent2ndL)
+
+var float pvLast3rdO = na
+var float pvLast3rdH = na
+var float pvLast3rdL = na
+var float pvLast3rdC = na
+var float pvCurrent3rdH = na
+var float pvCurrent3rdL = na
+var float pvCurrent3rdO = na
+if time(pv3rdTF) != time(pv3rdTF, 1)
+    pvLast3rdO := pvCurrent3rdO
+    pvCurrent3rdO := open
+    pvLast3rdC := close[1]
+    pvLast3rdH := pvCurrent3rdH
+    pvLast3rdL := pvCurrent3rdL
+    pvCurrent3rdH := na
+    pvCurrent3rdL := na
+pvCurrent3rdH := na(pvCurrent3rdH) ? high : math.max(high, pvCurrent3rdH)
+pvCurrent3rdL := na(pvCurrent3rdL) ? low : math.min(low, pvCurrent3rdL)
+
+sourceToValue(string source, float pvOpen, float pvHigh, float pvLow, float pvClose, float pvCO) =>
+    switch source
+        'close' => pvClose
+        'high' => pvHigh
+        'low' => pvLow
+        'open' => pvOpen
+        'hl/2' => (pvHigh + pvLow) / 2
+        'hlc3' => (pvHigh + pvLow + pvClose) / 3
+        'ohlc/4' => (pvOpen + pvHigh + pvLow + pvClose) / 4
+        'CurrentOpen' => pvCO
+        => (pvClose + pvHigh + pvLow + pvClose) / 4
+pv1stValue = sourceToValue(pv1stSource,pvLast1stO, pvLast1stH, pvLast1stL, pvLast1stC, pvCurrent1stO)
+pv2ndValue = sourceToValue(pv2ndSource,pvLast2ndO, pvLast2ndH, pvLast2ndL, pvLast2ndC, pvCurrent2ndO)
+pv3rdValue = sourceToValue(pv3rdSource,pvLast3rdO, pvLast3rdH, pvLast3rdL, pvLast3rdC, pvCurrent3rdO)
+
+parserSource(string source) =>
+    switch source
+        'close' => close
+        'CurrentOpen' => close
+        'high' => high
+        'low' => low
+        'open' => open
+        'hl/2' => hl2
+        'hlc3' => hlc3
+        'ohlc/4' => ohlc4
+        => hlcc4
+pv1stValue := pvBaseChart ? pv1stValue : request.security(symbol = syminfo.tickerid, timeframe = pv1stTF, expression = parserSource(pv1stSource), gaps = barmerge.gaps_off)
+pv2ndValue := pvBaseChart ? pv2ndValue : request.security(symbol = syminfo.tickerid, timeframe = pv2ndTF, expression = parserSource(pv2ndSource), gaps = barmerge.gaps_off)
+pv3rdValue := pvBaseChart ? pv3rdValue : request.security(symbol = syminfo.tickerid, timeframe = pv3rdTF, expression = parserSource(pv3rdSource), gaps = barmerge.gaps_off)
+
+if pvLineDraw
+    if pv1stUse and time(pv1stTF) != time(pv1stTF, 1) and not (last_bar_time > (pvDisplay == 'Today' ? time_close('1D') : pvDisplay == 'TimeFrame' ? time_close(pv1stTF) : last_bar_time))
+        line.new(time, pv1stValue, time_close(pv1stTF,-1), pv1stValue, xloc.bar_time, extend.none, pv1stColor, pv1stLine, pv1stWidth)
+    if pv2ndUse and time(pv2ndTF) != time(pv2ndTF, 1) and not (last_bar_time > (pvDisplay == 'Today' ? time_close('1D') : pvDisplay == 'TimeFrame' ? time_close(pv2ndTF) : last_bar_time))
+        line.new(time, pv2ndValue, time_close(pv2ndTF,-1), pv2ndValue, xloc.bar_time, extend.none, pv2ndColor, pv2ndLine, pv2ndWidth)
+    if pv3rdUse and time(pv3rdTF) != time(pv3rdTF, 1) and not (last_bar_time > (pvDisplay == 'Today' ? time_close('1D') : pvDisplay == 'TimeFrame' ? time_close(pv3rdTF) : last_bar_time))
+        line.new(time, pv3rdValue, time_close(pv3rdTF,-1), pv3rdValue, xloc.bar_time, extend.none, pv3rdColor, pv3rdLine, pv3rdWidth)
+
+pv1stValue := pv1stValue != pv1stValue[1] ? na : last_bar_time > (pvDisplay == 'Today' ? time_close('1D') : pvDisplay == 'TimeFrame' ? time_close(pv1stTF) : last_bar_time) ? na : pv1stValue
+pv2ndValue := pv2ndValue != pv2ndValue[1] ? na : last_bar_time > (pvDisplay == 'Today' ? time_close('1D') : pvDisplay == 'TimeFrame' ? time_close(pv2ndTF) : last_bar_time) ? na : pv2ndValue
+pv3rdValue := pv3rdValue != pv3rdValue[1] ? na : last_bar_time > (pvDisplay == 'Today' ? time_close('1D') : pvDisplay == 'TimeFrame' ? time_close(pv3rdTF) : last_bar_time) ? na : pv3rdValue
+
+plot(series = pv1stUse and not pvLineDraw ? pv1stValue : na, title = '1stl', color = pv1stColor, linewidth = pv1stWidth, style = plot.style_linebr)
+plot(series = pv2ndUse and not pvLineDraw ? pv2ndValue : na, title = '2ndl', color = pv2ndColor, linewidth = pv2ndWidth, style = plot.style_linebr)
+plot(series = pv3rdUse and not pvLineDraw ? pv3rdValue : na, title = '3rdl', color = pv3rdColor, linewidth = pv3rdWidth, style = plot.style_linebr)
+
+//Inside And Outside
+useOO = input.bool(defval = true, title = 'Use OO Pattern', group = 'I & O Bar')
+useII = input.bool(defval = true, title = 'Use II Pattern', group = 'I & O Bar')
+useIOI = input.bool(defval = true, title = 'Use IOI Pattern', group = 'I & O Bar')
+ioLableSize = input.string(defval = size.large, title = 'Label Size', options = [size.auto, size.tiny, size.small, size.normal, size.large, size.huge], inline = 'ioLable', group = 'I & O Bar')
+ioLableColor = input.color(defval = color.gray, title = '', inline = 'ioLable', group = 'I & O Bar')
+patternOO = high >= high[1] and low <= low[1] and high[1] >= high[2] and low[1] <= low[2] and (high != high[1] or low != low[1])
+patternII = high <= high[1] and low >= low[1] and high[1] <= high[2] and low[1] >= low[2] and (high != high[1] or low != low[1])
+patternIOI = high <= high[1] and low >= low[1] and high[1] >= high[2] and low[1] <= low[2]
+var label lastOOLable = na
+var label lastIILable = na
+var label lastIOILable = na
+if patternOO and useOO
+    index = 0
+    while patternOO[index + 1]
+        index := index + 1
+        index
+    if lastOOLable.get_x() + index == bar_index
+        lastOOLable.set_text(str.repeat('o', index + 2))
+    else
+        lastOOLable := label.new(x = bar_index, y = 0, yloc = yloc.abovebar, style = label.style_none, text = 'oo', size = ioLableSize, textcolor = ioLableColor)
+        lastOOLable
+if patternII and useII
+    index = 0
+    while patternII[index + 1]
+        index := index + 1
+        index
+    if lastIILable.get_x() + index == bar_index
+        lastIILable.set_text(str.repeat('i', index + 2))
+    else if lastIOILable.get_x() + 2 + index == bar_index
+        lastIOILable.set_text('ioi' + str.repeat('i', index + 1))
+    else if not patternIOI
+        lastIILable := label.new(x = bar_index, y = 0, yloc = yloc.abovebar, style = label.style_none, text = 'ii', size = ioLableSize, textcolor = ioLableColor)
+        lastIILable
+if patternIOI and useIOI
+    lastIOILable := label.new(x = bar_index - 1, y = 0, yloc = yloc.abovebar, style = label.style_none, text = 'ioi', size = ioLableSize, textcolor = ioLableColor)
+    index = 0
+    while patternOO[index + 1]
+        index := index + 1
+        index
+    if lastOOLable.get_x() + index == bar_index
+        lastOOLable.delete()
+        lastIOILable.set_text(str.repeat('i', index) + 'ioi')
+alertcondition(condition = patternOO, title = 'OO Pattern', message= 'OO Pattern')
+alertcondition(condition = patternII, title = 'II Pattern', message= 'II Pattern')
+alertcondition(condition = patternIOI, title = 'IOI Pattern', message= 'IOI Pattern')
+
+//H & L Count
+useHLC = input.bool(defval = true, title = "Use Count", group = "H & L Count")
+HColor = input.color(defval = #089981, title = "H Color", group = "H & L Count")
+LColor = input.color(defval = #F23645, title = "L Color", group = "H & L Count")
+HLCInterval = input.float(defval = 1.0, title = 'Interval', group = "H & L Count")
+interval = ta.sma(high - low, 100) * HLCInterval
+var int HCount = 0
+var float HLastL = na
+var bool BullPB = false
+var float BullPBL = na
+if low < low[1]
+    BullPB := true
+    if BullPBL > low or na(BullPBL)
+        BullPBL := low
+if high > high[1] and BullPB and useHLC
+    HCount := HCount + 1
+    if  BullPBL > HLastL or na(HLastL)
+        HCount := 1
+    HLastL := BullPBL
+    BullPBL := na
+    BullPB := false
+    label.new(x = bar_index, y = high + interval, text = 'H' + str.tostring(HCount), yloc = yloc.price, style = label.style_none, textcolor = HColor)
+
+var int LCount = 0
+var float LLastH = na
+var bool BearPB = false
+var float BearPBH = na
+if high > high[1]
+    BearPB := true
+    if BearPBH < high or na(BearPBH)
+        BearPBH := high
+if low < low[1] and BearPB and useHLC
+    LCount := LCount + 1
+    if BearPBH < LLastH or na(LLastH)
+        LCount := 1
+    LLastH := BearPBH
+    BearPBH := na
+    BearPB :=false
+    label.new(x = bar_index, y = low - interval, text = 'L' + str.tostring(LCount), yloc = yloc.price, style = label.style_none, textcolor = LColor)
