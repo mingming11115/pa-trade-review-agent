@@ -45,7 +45,7 @@ export function sidebarTaskFromApi(task: AnalysisTask): SidebarTaskData {
     createdAt: task.created_at,
     locked: true,
     status: task.status,
-    latestExecutionId: task.latest_analysis_id ?? task.latest_execution_id,
+    latestExecutionId: task.latest_analysis_id,
     version: task.version,
     config: {
       type: task.kind,

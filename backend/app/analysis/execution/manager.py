@@ -7,7 +7,6 @@ import uuid
 from time import perf_counter
 from typing import Any, Callable
 
-from app.analysis.execution import events
 from app.analysis.history.snapshots import get_frozen_snapshot
 from app.analysis.tasks.models import RunStatus
 from app.analysis.tasks.repository import AnalysisTaskRepository
@@ -109,14 +108,12 @@ class AnalysisExecutionManager:
             payload = result.model_dump(mode="json")
             await self.repository.update_run_result(execution.analysis_id, payload)
             await self.repository.finish_run(execution.user_id, execution.analysis_id, status=RunStatus.completed)
-            await events.append_event(execution_id, "result", "complete", "分析完成", {"result": payload}, terminal=True)
             logger.info(
                 "analysis_run_completed duration_ms=%d",
                 round((perf_counter() - started_at) * 1000),
             )
         except asyncio.CancelledError:
             await self.repository.finish_run(execution.user_id, execution.analysis_id, status=RunStatus.cancelled)
-            await events.append_event(execution_id, "cancelled", "complete", "分析已取消", terminal=True)
             logger.warning(
                 "analysis_run_cancelled duration_ms=%d",
                 round((perf_counter() - started_at) * 1000),
@@ -124,7 +121,6 @@ class AnalysisExecutionManager:
             raise
         except Exception as exc:
             await self.repository.finish_run(execution.user_id, execution.analysis_id, status=RunStatus.failed, failure_code="analysis_failed", failure_message=type(exc).__name__)
-            await events.append_event(execution_id, "error", "complete", "分析失败", {"code": "analysis_failed"}, terminal=True)
             logger.exception(
                 "analysis_run_failed duration_ms=%d error_type=%s",
                 round((perf_counter() - started_at) * 1000),
@@ -163,7 +159,6 @@ class AnalysisExecutionManager:
                         child_status, child_result = RunStatus.failed.value, None
                 async with lock:
                     completed += 1
-                    await events.append_event(execution.analysis_id, "progress", "review", f"复盘进度 {completed}/{len(children)}", {"completed": completed, "total": len(children)})
                 return child_status, child_result
 
         outcomes = await asyncio.gather(*(run_child(child) for child in children))
@@ -173,7 +168,6 @@ class AnalysisExecutionManager:
         payload = {"query": {"analysis_mode": "trade_review", "symbol": "MULTI", "period": "multi"}, "review_children": successful, "review_result": [item for result in successful for item in result.get("review_result", [])], "status": parent_status.value}
         await self.repository.update_run_result(execution.analysis_id, payload)
         await self.repository.finish_run(execution.user_id, execution.analysis_id, status=parent_status)
-        await events.append_event(execution.analysis_id, "result", "complete", "复盘完成" if parent_status == RunStatus.completed else "复盘部分完成", {"result": payload, "completed": len(successful), "total": len(children)}, terminal=True)
 
     async def cancel(self, execution_id: str) -> None:
         task = self.tasks.get(uuid.UUID(str(execution_id)))

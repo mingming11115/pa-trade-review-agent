@@ -313,12 +313,3 @@ AnalysisResultPublic = AnalysisRunDetailPublic
 
 
 Index("ix_analysis_tasks_owner_created", AnalysisTask.user_id, AnalysisTask.created_at)
-
-
-# Temporary backward-compatibility aliases during migration.
-ExecutionStatus = RunStatus
-AnalysisExecution = AnalysisRun
-AnalysisExecutionPublic = AnalysisRunPublic
-AnalysisExecutionListItem = AnalysisRunListItem
-AnalysisResultDetailPublic = AnalysisRunDetailPublic
-AnalysisResultPublic = AnalysisRunDetailPublic

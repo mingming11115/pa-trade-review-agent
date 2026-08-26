@@ -89,14 +89,14 @@ export interface AnalysisTaskPage {
   next_cursor: string | null;
 }
 
-export type AnalysisExecutionStatus = "queued" | "running" | "completed" | "completed_with_warnings" | "degraded" | "failed" | "cancel_requested" | "cancelled" | "timed_out";
+export type AnalysisRunStatus = "queued" | "running" | "completed" | "completed_with_warnings" | "degraded" | "failed" | "cancel_requested" | "cancelled" | "timed_out";
 export interface AnalysisExecution {
   analysis_id: string;
   task_id: string | null;
   parent_analysis_id: string | null;
   work_key: string | null;
   sequence: number | null;
-  status: AnalysisExecutionStatus;
+  status: AnalysisRunStatus;
   current_stage: string;
   failure_stage: string | null;
   failure_code: string | null;
@@ -113,7 +113,7 @@ export interface AnalysisExecutionListItem {
   parent_analysis_id: string | null;
   work_key: string | null;
   sequence: number | null;
-  status: AnalysisExecutionStatus | string;
+  status: AnalysisRunStatus | string;
   created_at: string;
   completed_at: string | null;
   result_id: string | null;
@@ -138,20 +138,11 @@ export interface AnalysisResultDetail {
   updated_at: string;
   result: DemoAnalysisResponse | ReviewExecutionResult;
 }
-export interface AnalysisTaskPreview {
-  snapshot_id: string; confirmation_id: string; expires_at: string;
-  resolved_symbol: string; bars_hash: string; bar_count: number;
-}
-export interface AnalysisExecutionEvent {
-  sequence: number; type: string; stage: string; message: string;
-  payload: { result_id?: string; result?: DemoAnalysisResponse | ReviewExecutionResult; [key: string]: unknown };
-  terminal: boolean;
-}
 export interface ReviewExecutionResult {
   query: { analysis_mode: "trade_review"; symbol: string; period: string };
   review_children: DemoAnalysisResponse[];
   review_result: NonNullable<DemoAnalysisResponse["review_result"]>;
-  status: AnalysisExecutionStatus;
+  status: AnalysisRunStatus;
 }
 
 /** On-demand analysis run state (Snapshot-based). */
