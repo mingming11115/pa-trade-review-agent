@@ -3,6 +3,41 @@ from types import SimpleNamespace
 import anyio
 
 from app.analysis.history.service import get_analysis_history
+from app.core.database import Base, ensure_schema
+
+
+def test_legacy_analysis_history_table_is_not_registered() -> None:
+    assert "analysis_history" not in Base.metadata.tables
+
+
+def test_schema_cleanup_drops_legacy_analysis_history_table(monkeypatch) -> None:
+    statements: list[str] = []
+
+    class FakeConnection:
+        dialect = SimpleNamespace(name="postgresql")
+
+        async def run_sync(self, _callback) -> None:
+            return None
+
+        async def execute(self, statement) -> None:
+            statements.append(str(statement))
+
+    class FakeBegin:
+        async def __aenter__(self) -> FakeConnection:
+            return FakeConnection()
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+    class FakeEngine:
+        def begin(self) -> FakeBegin:
+            return FakeBegin()
+
+    monkeypatch.setattr("app.core.database.engine", FakeEngine())
+
+    anyio.run(ensure_schema)
+
+    assert "DROP TABLE IF EXISTS analysis_history" in statements
 
 
 def test_opening_old_history_persists_recovered_llm_transcript(monkeypatch) -> None:

@@ -6,41 +6,17 @@ from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, JSON, String, Text, desc, or_, select
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import desc, select
 
 from app.analysis.execution.runs import get_analysis_llm_transcript
 from app.analysis.tasks.models import AnalysisRun, RunStatus
-from app.core.database import Base, SessionFactory, ensure_schema
+from app.core.database import SessionFactory, ensure_schema
 from app.core.errors import AppError
 from app.core.models import DemoAnalysisResponse
 
 
 UTC = timezone.utc
 logger = logging.getLogger(__name__)
-
-
-class AnalysisHistory(Base):
-    """兼容层历史模型：实际数据来自 `analysis_runs` 新表。"""
-
-    __tablename__ = "analysis_history"
-
-    analysis_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    mode: Mapped[str] = mapped_column(String(40), index=True)
-    symbol: Mapped[str] = mapped_column(String(100), index=True)
-    period: Mapped[str] = mapped_column(String(20), index=True)
-    status: Mapped[str] = mapped_column(String(30), index=True)
-    direction: Mapped[str] = mapped_column(String(20), index=True)
-    favorite: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    notes: Mapped[str] = mapped_column(Text, default="")
-    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
-    query_json: Mapped[dict[str, Any]] = mapped_column(JSON)
-    result_json: Mapped[dict[str, Any]] = mapped_column(JSON)
-    task_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True, index=True)
-    execution_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True, index=True)
-    result_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
 
 class AnalysisHistorySummary(BaseModel):

@@ -24,3 +24,7 @@
 - 数据库设计：`../../PA-database-schema.md`
 - 前端 API 与时序审计：`../../PA-frontend-api-sequence-audit.md`
 - LLM 流式输出说明：`../../backend/app/llm/流式输出梳理.md`
+
+## Wiki 条目
+
+- [任务、分析运行与分析历史的数据结构](analysis-task-run-history-data.md)

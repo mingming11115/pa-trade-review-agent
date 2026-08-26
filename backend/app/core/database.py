@@ -48,9 +48,7 @@ async def ensure_schema() -> None:
                 WHERE kind = 'analysis'
                   AND (analysis_symbol IS NULL OR analysis_period IS NULL)
                 """,
-                "ALTER TABLE analysis_history ADD COLUMN IF NOT EXISTS task_id UUID",
-                "ALTER TABLE analysis_history ADD COLUMN IF NOT EXISTS execution_id UUID",
-                "ALTER TABLE analysis_history ADD COLUMN IF NOT EXISTS result_id UUID",
+                "DROP TABLE IF EXISTS analysis_history",
             ):
                 await connection.execute(text(statement))
         elif connection.dialect.name == "sqlite":
@@ -69,13 +67,4 @@ async def ensure_schema() -> None:
                     WHERE kind = 'analysis'
                       AND (analysis_symbol IS NULL OR analysis_period IS NULL)
                 """))
-            existing_history_cols = {
-                row[1] for row in (await connection.execute(text("PRAGMA table_info(analysis_history)"))).fetchall()
-            } if (await connection.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='analysis_history'"))).first() else set()
-            if existing_history_cols:
-                if "task_id" not in existing_history_cols:
-                    await connection.execute(text("ALTER TABLE analysis_history ADD COLUMN task_id CHAR(36)"))
-                if "execution_id" not in existing_history_cols:
-                    await connection.execute(text("ALTER TABLE analysis_history ADD COLUMN execution_id CHAR(36)"))
-                if "result_id" not in existing_history_cols:
-                    await connection.execute(text("ALTER TABLE analysis_history ADD COLUMN result_id CHAR(36)"))
+            await connection.execute(text("DROP TABLE IF EXISTS analysis_history"))
