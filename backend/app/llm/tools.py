@@ -401,7 +401,7 @@ class _AnalysisHistoryListInput(BaseModel):
 class AnalysisListHistoryTool(LLMTool):
     name = "analysis.list_history"
     description = (
-        "List recent analysis history summaries. Each item includes analysis_id, "
+        "List recent analysis history summaries. Each item includes run_id, "
         "symbol, period, mode, status, direction, favorite, notes, tags, and timestamps. "
         "Optionally filter by symbol, period, mode, or favorite flag. Results are "
         "ordered newest-first."
@@ -469,31 +469,31 @@ class AnalysisListHistoryTool(LLMTool):
 class AnalysisGetDetailTool(LLMTool):
     name = "analysis.get_detail"
     description = (
-        "Get the full detail of a single analysis by its analysis_id. "
+        "Get the full detail of a single analysis by its run_id. "
         "Returns the complete result JSON including stage1, stage2, decision, "
         "and the LLM transcript."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "analysis_id": {
+            "run_id": {
                 "type": "string",
                 "description": "The unique analysis identifier.",
             },
         },
-        "required": ["analysis_id"],
+        "required": ["run_id"],
         "additionalProperties": False,
     }
 
     async def execute(self, **arguments: Any) -> dict[str, Any]:
-        """根据 analysis_id 获取单次分析的完整详情，包括 stage1、stage2、decision 及 LLM 对话记录。"""
-        analysis_id = str(arguments.get("analysis_id") or "").strip()
-        if not analysis_id:
-            raise AppError("llm_tool_arguments_invalid", "analysis_id 不能为空", 422)
-        result = await get_analysis_history(analysis_id)
+        """根据 run_id 获取单次分析的完整详情，包括 stage1、stage2、decision 及 LLM 对话记录。"""
+        run_id = str(arguments.get("run_id") or "").strip()
+        if not run_id:
+            raise AppError("llm_tool_arguments_invalid", "run_id 不能为空", 422)
+        result = await get_analysis_history(run_id)
         return {
             "tool": self.name,
-            "analysis_id": analysis_id,
+            "run_id": run_id,
             "result": result,
         }
 

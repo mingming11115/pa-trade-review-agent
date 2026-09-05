@@ -94,7 +94,7 @@ class PersonalSettingsPublic(BaseModel):
 class TokenUsageRecord(BaseModel):
     """单次 Token 用量记录。"""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    analysis_id: str
+    run_id: str
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     model_id: str | None = None
     model: str | None = None
@@ -206,7 +206,7 @@ def get_usage(limit: int = 200) -> TokenUsageSummary:
         prompt_tokens=sum(item.prompt_tokens for item in records),
         completion_tokens=sum(item.completion_tokens for item in records),
         total_tokens=sum(item.total_tokens for item in records),
-        analysis_count=len({item.analysis_id for item in records}),
+        analysis_count=len({item.run_id for item in records}),
         records=records,
     )
 

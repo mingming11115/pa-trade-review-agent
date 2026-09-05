@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, status
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.analysis.history.snapshots import FrozenInputSnapshot, create_input_snapshot, create_review_input_snapshot
@@ -21,10 +17,9 @@ from app.analysis.tasks.models import (
     EnsureLiveAnalysisTaskInput,
     RunStatus,
     SnapshotPreviewPublic,
-    StartExecutionInput,
 )
-from app.analysis.tasks.repository import AnalysisTaskRepository
-from app.analysis.execution.manager import DEFAULT_EXECUTION_MANAGER, AnalysisExecutionManager
+from app.analysis.tasks.repository import AnalysisTaskRepository, RunCreateSpec
+from app.analysis.execution.manager import DEFAULT_RUN_MANAGER, AnalysisRunManager
 from app.auth.service import UserPublic, current_user, limit_expensive
 from app.market.service import LocalFirstMarketProvider
 from app.market.provider import MassiveHistoricalProvider
@@ -44,8 +39,8 @@ def get_analysis_task_repository() -> AnalysisTaskRepository:
     return AnalysisTaskRepository()
 
 
-def get_analysis_execution_manager() -> AnalysisExecutionManager:
-    return DEFAULT_EXECUTION_MANAGER
+def get_analysis_run_manager() -> AnalysisRunManager:
+    return DEFAULT_RUN_MANAGER
 
 
 def get_analysis_provider():
@@ -60,7 +55,6 @@ def _task_public(task: Any) -> AnalysisTaskPublic:
         description=task.description,
         status=task.status,
         config=task.config_json,
-        latest_analysis_id=task.latest_analysis_id,
         version=task.version,
         created_at=task.created_at,
         updated_at=task.updated_at,
@@ -71,6 +65,12 @@ def _task_public(task: Any) -> AnalysisTaskPublic:
 class AnalysisTaskPagePublic(BaseModel):
     items: list[AnalysisTaskPublic]
     next_cursor: str | None
+
+
+class AnalysisRunStartItem(BaseModel):
+    run_id: uuid.UUID
+    period: str
+    status: RunStatus
 
 
 @router.post(
@@ -161,15 +161,15 @@ async def preview_analysis_task(task_id: uuid.UUID, user: UserPublic = Depends(l
     )
 
 
-@router.post("/analysis-tasks/{task_id}/runs", response_model=AnalysisRunPublic, status_code=202)
+@router.post("/analysis-tasks/{task_id}/runs", response_model=list[AnalysisRunStartItem], status_code=202)
 async def start_analysis_task_run(
     task_id: uuid.UUID,
     user: UserPublic = Depends(limit_expensive),
     repository: AnalysisTaskRepository = Depends(get_analysis_task_repository),
-    manager: AnalysisExecutionManager = Depends(get_analysis_execution_manager),
+    manager: AnalysisRunManager = Depends(get_analysis_run_manager),
     provider=Depends(get_analysis_provider),
     session: AsyncSession = Depends(get_session),
-) -> AnalysisRunPublic:
+) -> list[AnalysisRunStartItem]:
     task = await repository.get_task(user.id, task_id)
     if task.kind == "review":
         selected_ids = [uuid.UUID(value) for value in task.config_json["selected_trade_ids"]]
@@ -180,23 +180,40 @@ async def start_analysis_task_run(
         snapshot: FrozenInputSnapshot = await create_review_input_snapshot(user.id, task, trades, provider, repository)
     else:
         snapshot = await create_input_snapshot(user.id, task, provider, repository)
-    run_id = str(uuid.uuid4())
-    run = await repository.create_run(
-        user.id,
-        task_id,
-        {"snapshot_id": str(snapshot.id), "query": snapshot.query_json},
-        run_id=run_id,
-        sequence=1,
-        bars_json=snapshot.bars_json,
-        bars_hash=snapshot.bars_hash,
-        prompt_versions_json=snapshot.prompt_versions_json,
-        model_config_json=snapshot.model_config_json,
-        mode="historical",
-        symbol=snapshot.resolved_symbol,
-        period=str((task.config_json or {}).get("period") or ""),
-    )
-    manager.start(run.analysis_id, get_trace_id())
-    return AnalysisRunPublic.model_validate(run)
+    if task.kind == "review":
+        by_period: dict[str, list[dict[str, Any]]] = {}
+        for item in snapshot.query_json.get("children", []):
+            by_period.setdefault(str(item["period"]), []).append(item)
+        specs = [
+            RunCreateSpec(
+                period=period,
+                query_json={"kind": "review", "items": items},
+                resolved_symbol="MULTI",
+                bars_json=None,
+                bars_hash=snapshot.bars_hash,
+                mode="trade_review",
+                symbol="MULTI",
+            )
+            for period, items in by_period.items()
+        ]
+    else:
+        period = str(task.config_json["period"])
+        specs = [
+            RunCreateSpec(
+                period=period,
+                query_json={"snapshot_id": str(snapshot.id), "query": snapshot.query_json},
+                resolved_symbol=snapshot.resolved_symbol,
+                bars_json=snapshot.bars_json,
+                bars_hash=snapshot.bars_hash,
+                mode="historical",
+                symbol=snapshot.resolved_symbol,
+            )
+        ]
+    runs = await repository.create_runs_for_task(user.id, task_id, specs)
+    trace_id = get_trace_id()
+    for run in runs:
+        manager.start(run.id, trace_id)
+    return [AnalysisRunStartItem(run_id=run.id, period=run.period, status=run.status) for run in runs]
 
 
 @router.get("/analysis-tasks/{task_id}/runs", response_model=list[AnalysisRunListItem])
@@ -205,17 +222,11 @@ async def list_analysis_task_runs(
     user: UserPublic = Depends(current_user),
     repository: AnalysisTaskRepository = Depends(get_analysis_task_repository),
 ) -> list[AnalysisRunListItem]:
-    from app.analysis.history.service import list_history_for_live_task
-
-    task = await repository.get_task(user.id, task_id)
     runs = await repository.list_runs(user.id, task_id)
-    items: list[AnalysisRunListItem] = [
+    return [
         AnalysisRunListItem(
-            analysis_id=run.analysis_id,
+            run_id=run.id,
             task_id=run.task_id,
-            parent_analysis_id=run.parent_analysis_id,
-            work_key=run.work_key,
-            sequence=run.sequence,
             status=str(run.status),
             created_at=run.created_at,
             completed_at=run.completed_at,
@@ -226,55 +237,19 @@ async def list_analysis_task_runs(
         )
         for run in runs
     ]
-    seen_analysis_ids = {item.analysis_id for item in items}
-    symbol = task.analysis_symbol or str((task.config_json or {}).get("symbol") or "")
-    period = task.analysis_period or str((task.config_json or {}).get("period") or "")
-    if task.kind == "analysis" and symbol and period:
-        history_rows = await list_history_for_live_task(
-            task_id=str(task.id),
-            symbol=symbol.strip().upper(),
-            period=period,
-        )
-        for index, history in enumerate(history_rows, start=1):
-            if history.analysis_id and history.analysis_id in seen_analysis_ids:
-                continue
-            items.append(
-                AnalysisRunListItem(
-                    analysis_id=history.analysis_id,
-                    task_id=task.id,
-                    parent_analysis_id=None,
-                    work_key=None,
-                    sequence=-(index),
-                    status=history.status,
-                    created_at=history.created_at,
-                    completed_at=history.updated_at,
-                    direction=history.direction,
-                    terminal_outcome=None,
-                    symbol=history.symbol,
-                    period=history.period,
-                )
-            )
-    items.sort(key=lambda item: item.created_at, reverse=True)
-    total = len(items)
-    for offset, item in enumerate(items):
-        item.sequence = total - offset
-    return items
 
 
-@router.get("/analysis-runs/{analysis_id}", response_model=AnalysisRunDetailPublic)
+@router.get("/analysis-runs/{run_id}", response_model=AnalysisRunDetailPublic)
 async def get_analysis_run(
-    analysis_id: str,
+    run_id: uuid.UUID,
     user: UserPublic = Depends(current_user),
     repository: AnalysisTaskRepository = Depends(get_analysis_task_repository),
 ) -> AnalysisRunDetailPublic:
-    run = await repository.get_run(user.id, analysis_id)
-    payload = await repository.get_run_detail(user.id, analysis_id)
+    run = await repository.get_run(user.id, run_id)
+    payload = await repository.get_run_detail(user.id, run_id)
     return AnalysisRunDetailPublic(
-        analysis_id=run.analysis_id,
+        run_id=run.id,
         task_id=run.task_id,
-        parent_analysis_id=run.parent_analysis_id,
-        work_key=run.work_key,
-        sequence=run.sequence,
         status=str(run.status),
         mode=run.mode,
         symbol=run.symbol,
@@ -287,155 +262,13 @@ async def get_analysis_run(
     )
 
 
-@router.post("/analysis-runs/{analysis_id}/cancel", response_model=AnalysisRunPublic)
+@router.post("/analysis-runs/{run_id}/cancel", response_model=AnalysisRunPublic)
 async def cancel_analysis_run(
-    analysis_id: str,
+    run_id: uuid.UUID,
     user: UserPublic = Depends(current_user),
     repository: AnalysisTaskRepository = Depends(get_analysis_task_repository),
-    manager: AnalysisExecutionManager = Depends(get_analysis_execution_manager),
+    manager: AnalysisRunManager = Depends(get_analysis_run_manager),
 ) -> AnalysisRunPublic:
-    run = await repository.request_run_cancel(user.id, analysis_id)
-    await manager.cancel(run.analysis_id)
+    run = await repository.request_run_cancel(user.id, run_id)
+    await manager.cancel(run.id)
     return AnalysisRunPublic.model_validate(run)
-
-
-# Backward-compatible aliases for in-flight callers during migration.
-AnalysisExecutionPublic = AnalysisRunPublic
-AnalysisExecutionListItem = AnalysisRunListItem
-AnalysisResultDetailPublic = AnalysisRunDetailPublic
-AnalysisResultPublic = AnalysisRunDetailPublic
-
-
-@router.post("/analysis-tasks/{task_id}/executions", response_model=AnalysisExecutionPublic, status_code=202)
-async def start_analysis_task(task_id: uuid.UUID, payload: StartExecutionInput, user: UserPublic = Depends(limit_expensive), repository: AnalysisTaskRepository = Depends(get_analysis_task_repository), manager: AnalysisExecutionManager = Depends(get_analysis_execution_manager)) -> AnalysisExecutionPublic:
-    from app.analysis.history.snapshots import FrozenInputSnapshot as Snapshot
-    snapshot: Snapshot = await repository.get_snapshot(user.id, payload.snapshot_id)
-    expires = snapshot.expires_at if snapshot.expires_at.tzinfo else snapshot.expires_at.replace(tzinfo=timezone.utc)
-    if snapshot.task_id != task_id or snapshot.confirmation_id != payload.confirmation_id or expires <= datetime.now(timezone.utc):
-        raise AppError("analysis_snapshot_invalid", "分析输入快照无效或已过期", 409)
-    execution = await repository.create_execution(user.id, task_id, snapshot.id)
-    manager.start(str(execution.id), get_trace_id())
-    return AnalysisExecutionPublic.model_validate(execution)
-
-
-@router.get("/analysis-tasks/{task_id}/executions", response_model=list[AnalysisExecutionListItem])
-async def list_analysis_task_executions(
-    task_id: uuid.UUID,
-    user: UserPublic = Depends(current_user),
-    repository: AnalysisTaskRepository = Depends(get_analysis_task_repository),
-) -> list[AnalysisExecutionListItem]:
-    from app.analysis.history.service import list_history_for_live_task
-
-    task = await repository.get_task(user.id, task_id)
-    rows = await repository.list_executions(user.id, task_id)
-    items: list[AnalysisExecutionListItem] = [
-        AnalysisExecutionListItem(
-            id=execution.id,
-            task_id=execution.task_id,
-            sequence=execution.sequence,
-            status=str(execution.status),
-            created_at=execution.created_at,
-            completed_at=execution.completed_at,
-            result_id=result.id if result else None,
-            direction=result.direction if result else None,
-            symbol=result.symbol if result else None,
-            period=result.period if result else None,
-            source="execution",
-        )
-        for execution, result in rows
-    ]
-    seen_result_ids = {str(item.result_id) for item in items if item.result_id}
-    seen_execution_ids = {str(item.id) for item in items}
-    symbol = task.analysis_symbol or str((task.config_json or {}).get("symbol") or "")
-    period = task.analysis_period or str((task.config_json or {}).get("period") or "")
-    if task.kind == "analysis" and symbol and period:
-        history_rows = await list_history_for_live_task(
-            task_id=str(task.id),
-            symbol=symbol.strip().upper(),
-            period=period,
-        )
-        for index, history in enumerate(history_rows, start=1):
-            if history.result_id and str(history.result_id) in seen_result_ids:
-                continue
-            if history.execution_id and str(history.execution_id) in seen_execution_ids:
-                continue
-            items.append(
-                AnalysisExecutionListItem(
-                    id=history.execution_id or history.analysis_id,
-                    task_id=task.id,
-                    sequence=-(index),
-                    status=history.status,
-                    created_at=history.created_at,
-                    completed_at=history.updated_at,
-                    result_id=str(history.result_id) if history.result_id else None,
-                    analysis_id=history.analysis_id,
-                    direction=history.direction,
-                    symbol=history.symbol,
-                    period=history.period,
-                    source="history",
-                )
-            )
-    items.sort(key=lambda item: item.created_at, reverse=True)
-    total = len(items)
-    for offset, item in enumerate(items):
-        item.sequence = total - offset
-    return items
-
-
-@router.get("/analysis-results/{result_id}", response_model=AnalysisResultDetailPublic)
-async def get_analysis_result(
-    result_id: uuid.UUID,
-    user: UserPublic = Depends(current_user),
-    repository: AnalysisTaskRepository = Depends(get_analysis_task_repository),
-) -> AnalysisResultDetailPublic:
-    record = await repository.get_result(user.id, result_id)
-    payload = await repository.get_result_payload(user.id, result_id)
-    return AnalysisResultDetailPublic(
-        id=record.id,
-        task_id=record.task_id,
-        execution_id=record.execution_id,
-        mode=record.mode,
-        symbol=record.symbol,
-        period=record.period,
-        direction=record.direction,
-        terminal_outcome=record.terminal_outcome,
-        status=record.status,
-        favorite=record.favorite,
-        notes=record.notes,
-        tags=record.tags,
-        created_at=record.created_at,
-        updated_at=record.updated_at,
-        result=payload,
-    )
-
-
-@router.get("/analysis-executions/{execution_id}", response_model=AnalysisExecutionPublic)
-async def get_analysis_execution(execution_id: uuid.UUID, user: UserPublic = Depends(current_user), repository: AnalysisTaskRepository = Depends(get_analysis_task_repository)) -> AnalysisExecutionPublic:
-    return AnalysisExecutionPublic.model_validate(await repository.get_execution(user.id, execution_id))
-
-
-@router.post("/analysis-executions/{execution_id}/cancel", response_model=AnalysisExecutionPublic)
-async def cancel_analysis_execution(execution_id: uuid.UUID, user: UserPublic = Depends(current_user), repository: AnalysisTaskRepository = Depends(get_analysis_task_repository), manager: AnalysisExecutionManager = Depends(get_analysis_execution_manager)) -> AnalysisExecutionPublic:
-    execution = await repository.request_cancel(user.id, execution_id)
-    await manager.cancel(execution_id)
-    return AnalysisExecutionPublic.model_validate(execution)
-
-
-@router.get("/analysis-executions/{execution_id}/events")
-async def analysis_execution_events(execution_id: uuid.UUID, after_sequence: int = Query(0, ge=0), user: UserPublic = Depends(current_user), repository: AnalysisTaskRepository = Depends(get_analysis_task_repository)):
-    from app.analysis.execution import events
-    await repository.get_execution(user.id, execution_id)
-    async def stream():
-        cursor = after_sequence
-        while True:
-            batch = await events.list_events(execution_id, cursor)
-            for event in batch:
-                cursor = event.sequence
-                yield json.dumps({"sequence": event.sequence, "type": event.type, "stage": event.stage, "message": event.message, "payload": event.payload, "terminal": event.terminal}, ensure_ascii=False) + "\n"
-                if event.terminal:
-                    return
-            execution = await repository.get_execution(user.id, execution_id)
-            if execution.status in {"completed", "completed_with_warnings", "degraded", "failed", "cancelled", "timed_out"} and not batch:
-                return
-            await asyncio.sleep(0.2)
-    return StreamingResponse(stream(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

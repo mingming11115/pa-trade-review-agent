@@ -132,12 +132,12 @@ def _split_followup_history(
 
 
 class FollowupMessageRecord(Base):
-    """追问消息持久化表：按 analysis_id + seq 存储完整对话。"""
+    """追问消息持久化表：按 run_id + seq 存储完整对话。"""
 
     __tablename__ = "followup_messages"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    analysis_id: Mapped[str] = mapped_column(String(64), index=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
     seq: Mapped[int] = mapped_column(Integer, index=True)
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
@@ -168,13 +168,13 @@ class FollowupRequest(BaseModel):
 class FollowupSession:
     """追问会话的内存态对象，保存分析上下文和消息列表。"""
 
-    analysis_id: str
+    run_id: str
     messages: list[dict[str, str]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
 
-async def load_followup_messages(analysis_id: str) -> list[dict[str, str]]:
+async def load_followup_messages(run_id: str) -> list[dict[str, str]]:
     """从数据库加载指定分析的所有追问消息（按 seq 升序）。"""
     try:
         await ensure_schema()
@@ -182,17 +182,17 @@ async def load_followup_messages(analysis_id: str) -> list[dict[str, str]]:
             rows = (
                 await session.scalars(
                     select(FollowupMessageRecord)
-                    .where(FollowupMessageRecord.analysis_id == analysis_id)
+                    .where(FollowupMessageRecord.run_id == run_id)
                     .order_by(asc(FollowupMessageRecord.seq))
                 )
             ).all()
         return [{"role": row.role, "content": row.content} for row in rows]
     except Exception:
-        logger.exception("followup messages load failed analysis_id=%s", analysis_id)
+        logger.exception("followup messages load failed run_id=%s", run_id)
         return []
 
 
-async def append_followup_messages(analysis_id: str, messages: list[dict[str, str]]) -> None:
+async def append_followup_messages(run_id: str, messages: list[dict[str, str]]) -> None:
     """将追问消息追加写入数据库（自动计算 seq）。"""
     if not messages:
         return
@@ -202,7 +202,7 @@ async def append_followup_messages(analysis_id: str, messages: list[dict[str, st
             existing_count = (
                 await session.scalar(
                     select(FollowupMessageRecord)
-                    .where(FollowupMessageRecord.analysis_id == analysis_id)
+                    .where(FollowupMessageRecord.run_id == run_id)
                     .order_by(FollowupMessageRecord.seq.desc())
                     .limit(1)
                 )
@@ -210,7 +210,7 @@ async def append_followup_messages(analysis_id: str, messages: list[dict[str, st
             next_seq = (existing_count.seq + 1) if existing_count else 0
             for message in messages:
                 session.add(FollowupMessageRecord(
-                    analysis_id=analysis_id,
+                    run_id=run_id,
                     seq=next_seq,
                     role=str(message.get("role") or "user"),
                     content=str(message.get("content") or ""),
@@ -218,10 +218,10 @@ async def append_followup_messages(analysis_id: str, messages: list[dict[str, st
                 next_seq += 1
             await session.commit()
     except Exception:
-        logger.exception("followup messages append failed analysis_id=%s", analysis_id)
+        logger.exception("followup messages append failed run_id=%s", run_id)
 
 
-async def replace_followup_prefix(analysis_id: str, messages: list[dict[str, str]]) -> None:
+async def replace_followup_prefix(run_id: str, messages: list[dict[str, str]]) -> None:
     """替换并重写指定分析的全部存储消息（用于会话初始化）。"""
     try:
         await ensure_schema()
@@ -229,26 +229,26 @@ async def replace_followup_prefix(analysis_id: str, messages: list[dict[str, str
 
         async with SessionFactory() as session:
             await session.execute(
-                delete(FollowupMessageRecord).where(FollowupMessageRecord.analysis_id == analysis_id)
+                delete(FollowupMessageRecord).where(FollowupMessageRecord.run_id == run_id)
             )
             for seq, message in enumerate(messages):
                 session.add(FollowupMessageRecord(
-                    analysis_id=analysis_id,
+                    run_id=run_id,
                     seq=seq,
                     role=str(message.get("role") or "user"),
                     content=str(message.get("content") or ""),
                 ))
             await session.commit()
     except Exception:
-        logger.exception("followup messages replace failed analysis_id=%s", analysis_id)
+        logger.exception("followup messages replace failed run_id=%s", run_id)
 
 
-async def list_followup_history(analysis_id: str) -> list[FollowupMessagePublic]:
+async def list_followup_history(run_id: str) -> list[FollowupMessagePublic]:
     """列出指定分析的追问历史消息，跳过初始前缀中的非 user 消息。"""
-    messages = await load_followup_messages(analysis_id)
+    messages = await load_followup_messages(run_id)
     return [
         FollowupMessagePublic(
-            id=f"fu-{analysis_id}-{index}",
+            id=f"fu-{run_id}-{index}",
             role=m["role"],
             content=m["content"],
             seq=index,
@@ -271,41 +271,41 @@ class FollowupSessionStore:
         self._lock = threading.Lock()
         self._sessions: dict[str, FollowupSession] = {}
 
-    def get(self, analysis_id: str) -> FollowupSession | None:
+    def get(self, run_id: str) -> FollowupSession | None:
         """从内存缓存获取追问会话，不存在则返回 None。"""
         with self._lock:
-            return self._sessions.get(analysis_id)
+            return self._sessions.get(run_id)
 
-    async def get_or_load(self, analysis_id: str) -> FollowupSession | None:
+    async def get_or_load(self, run_id: str) -> FollowupSession | None:
         """优先从内存缓存获取会话，缓存未命中时从数据库加载。"""
         with self._lock:
-            cached = self._sessions.get(analysis_id)
+            cached = self._sessions.get(run_id)
         if cached is not None:
             return cached
-        messages = await load_followup_messages(analysis_id)
+        messages = await load_followup_messages(run_id)
         if not messages:
             return None
-        session = FollowupSession(analysis_id=analysis_id, messages=messages)
+        session = FollowupSession(run_id=run_id, messages=messages)
         with self._lock:
-            self._sessions[analysis_id] = session
+            self._sessions[run_id] = session
         return session
 
     def put(self, session: FollowupSession) -> FollowupSession:
         """将会话写入内存缓存并返回。"""
         with self._lock:
-            self._sessions[session.analysis_id] = session
+            self._sessions[session.run_id] = session
             return session
 
     async def put_and_persist(self, session: FollowupSession) -> FollowupSession:
         """将会话写入内存缓存，同时将全部消息持久化到数据库。"""
         self.put(session)
-        await replace_followup_prefix(session.analysis_id, session.messages)
+        await replace_followup_prefix(session.run_id, session.messages)
         return session
 
-    def clear(self, analysis_id: str) -> None:
+    def clear(self, run_id: str) -> None:
         """从内存缓存中清除指定会话。"""
         with self._lock:
-            self._sessions.pop(analysis_id, None)
+            self._sessions.pop(run_id, None)
 
     def reset(self) -> None:
         """清空所有内存缓存中的追问会话。"""
@@ -352,7 +352,7 @@ async def _compact_followup_history(
         chunks = [piece async for piece in stream_chat(summary_messages) if piece]
         summary = "".join(chunks).strip()
         if not summary:
-            logger.warning("followup compaction returned empty summary analysis_id=%s", session.analysis_id)
+            logger.warning("followup compaction returned empty summary run_id=%s", session.run_id)
             return False
 
         original_messages = session.messages
@@ -368,7 +368,7 @@ async def _compact_followup_history(
             raise
         return True
     except Exception:
-        logger.exception("followup compaction failed analysis_id=%s", session.analysis_id)
+        logger.exception("followup compaction failed run_id=%s", session.run_id)
         return False
 
 
@@ -432,7 +432,7 @@ def build_decision_recall(stage1: dict[str, Any] | None, stage2: dict[str, Any] 
 def build_analysis_context_payload(result: dict[str, Any]) -> dict[str, Any]:
     """从分析结果中提取并构建钉死的上下文 JSON（stage1/stage2 + 元数据）。"""
     return {
-        "analysis_id": result.get("analysis_id"),
+        "run_id": result.get("run_id"),
         "resolved_symbol": result.get("resolved_symbol"),
         "query": {
             "symbol": (result.get("query") or {}).get("symbol"),
@@ -557,7 +557,7 @@ def build_user_turn_content(
     return f"{kline}\n## 用户问题\n{question.strip()}\n"
 
 
-def seed_followup_session(analysis_id: str, result: dict[str, Any]) -> FollowupSession:
+def seed_followup_session(run_id: str, result: dict[str, Any]) -> FollowupSession:
     """根据分析结果初始化追问会话，设置 system prompt、钉死上下文和决策摘要。"""
     stage1 = result.get("stage1") if isinstance(result.get("stage1"), dict) else None
     stage2 = result.get("stage2") if isinstance(result.get("stage2"), dict) else None
@@ -574,25 +574,25 @@ def seed_followup_session(analysis_id: str, result: dict[str, Any]) -> FollowupS
         },
         {"role": "assistant", "content": build_decision_recall(stage1, stage2)},
     ]
-    return FollowupSession(analysis_id=analysis_id, messages=messages)
+    return FollowupSession(run_id=run_id, messages=messages)
 
 
 async def ensure_followup_session(
-    analysis_id: str,
+    run_id: str,
     result: dict[str, Any],
     store: FollowupSessionStore | None = None,
 ) -> FollowupSession:
     """确保追问会话存在：优先从缓存/数据库获取，不存在则初始化并持久化。"""
     active_store = store or DEFAULT_FOLLOWUP_STORE
-    existing = await active_store.get_or_load(analysis_id)
+    existing = await active_store.get_or_load(run_id)
     if existing is not None:
         return existing
-    session = seed_followup_session(analysis_id, result)
+    session = seed_followup_session(run_id, result)
     return await active_store.put_and_persist(session)
 
 
 class FollowupTurnState(TypedDict, total=False):
-    analysis_id: str
+    run_id: str
     session: FollowupSession
     store: FollowupSessionStore
     user_content: str
@@ -651,7 +651,7 @@ class FollowupGraph:
         """图节点：流式调用 LLM 获取回复，将 delta 推入队列；出错时回滚用户消息。"""
         session = state["session"]
         queue = state.get("queue")
-        analysis_id = state["analysis_id"]
+        run_id = state["run_id"]
         chunks: list[str] = []
         try:
             async for piece in stream_chat(session.messages):
@@ -659,7 +659,7 @@ class FollowupGraph:
                     continue
                 chunks.append(piece)
                 if queue is not None:
-                    await queue.put({"type": "delta", "content": piece, "analysis_id": analysis_id})
+                    await queue.put({"type": "delta", "content": piece, "run_id": run_id})
         except AppError as exc:
             if session.messages and session.messages[-1].get("role") == "user":
                 session.messages.pop()
@@ -722,7 +722,7 @@ _DEFAULT_GRAPH = FollowupGraph()
 
 async def stream_followup_turn(
     *,
-    analysis_id: str,
+    run_id: str,
     result: dict[str, Any],
     request: FollowupRequest,
     store: FollowupSessionStore | None = None,
@@ -742,16 +742,16 @@ async def stream_followup_turn(
     symbol = request.symbol or result.get("resolved_symbol") or query.get("symbol") or "UNKNOWN"
     period = request.period or query.get("period") or "1m"
 
-    session = await ensure_followup_session(analysis_id, result, store=active_store)
+    session = await ensure_followup_session(run_id, result, store=active_store)
     user_content = build_user_turn_content(question, request.bars, symbol=symbol, period=period)
 
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
     async def _run_graph() -> None:
         try:
-            await queue.put({"type": "status", "message": "追问助手思考中…", "analysis_id": analysis_id})
+            await queue.put({"type": "status", "message": "追问助手思考中…", "run_id": run_id})
             final = await _DEFAULT_GRAPH.run(FollowupTurnState(
-                analysis_id=analysis_id,
+                run_id=run_id,
                 session=session,
                 store=active_store,
                 user_content=user_content,
@@ -761,7 +761,7 @@ async def stream_followup_turn(
                 route="stream",
                 queue=queue,
             ))
-            await append_followup_messages(analysis_id, [
+            await append_followup_messages(run_id, [
                 {"role": "user", "content": user_content},
                 {"role": "assistant", "content": final.get("answer", "")},
             ])
@@ -770,7 +770,7 @@ async def stream_followup_turn(
             await queue.put({
                 "type": "done",
                 "message": "追问完成",
-                "analysis_id": analysis_id,
+                "run_id": run_id,
                 "content": final.get("answer", ""),
                 "turn_count": turn_count,
             })

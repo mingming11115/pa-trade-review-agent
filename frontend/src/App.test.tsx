@@ -255,7 +255,7 @@ describe("App", () => {
     };
     const task = {
       id: "task-live-1", kind: "analysis", title: "ES · 5m", description: "实时 K 线分析任务", status: "pending",
-      config: { symbol: "ES", period: "5m" }, latest_execution_id: null, version: 1,
+      config: { symbol: "ES", period: "5m" }, version: 1,
       created_at: "2026-08-11T01:00:00Z", updated_at: "2026-08-11T01:00:00Z", archived_at: null,
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -275,24 +275,13 @@ describe("App", () => {
         }), { status: 200 });
       }
       if (url === "/api/v1/analysis-tasks/task-live-1/runs" && init?.method === "POST") {
-        return new Response(JSON.stringify({
-          analysis_id: "exec-1", task_id: "task-live-1", parent_analysis_id: null, work_key: null, sequence: 1,
-          status: "queued", current_stage: "prepare", failure_stage: null, failure_code: null,
-          failure_message: null, terminal_reason: null, started_at: null, completed_at: null,
-          created_at: "2026-08-11T01:07:00Z",
-        }), { status: 202 });
-      }
-      if (url.startsWith("/api/v1/analysis-executions/exec-1/events")) {
-        return new Response(`${JSON.stringify({
-          sequence: 1, type: "result", stage: "complete", message: "分析完成",
-          payload: { result_id: "result-1", result }, terminal: true,
-        })}\n`, { status: 200 });
+        return new Response(JSON.stringify([{ run_id: "exec-1", period: "5m", status: "queued" }]), { status: 202 });
       }
       if (url === "/api/v1/analysis-tasks/task-live-1/runs") {
         return new Response(JSON.stringify([{
-          id: "exec-1", task_id: "task-live-1", sequence: 1, status: "completed",
+          run_id: "exec-1", task_id: "task-live-1", status: "completed",
           created_at: "2026-08-11T01:07:00Z", completed_at: "2026-08-11T01:07:05Z",
-          result_id: "result-1", direction: "bullish", symbol: "ES", period: "5m",
+          direction: "bullish", symbol: "ES", period: "5m",
         }]), { status: 200 });
       }
       throw new Error(`未预期的请求：${url} ${init?.method ?? "GET"}`);
@@ -313,7 +302,7 @@ describe("App", () => {
   it("shows and copies the selected run ID instead of the task's latest execution ID", async () => {
     const task = {
       id: "task-run-id", kind: "analysis", title: "ES 运行记录", description: "", status: "running",
-      config: { symbol: "ES", period: "5m" }, latest_execution_id: "exec-latest", version: 1,
+      config: { symbol: "ES", period: "5m" }, version: 1,
       created_at: "2026-08-11T01:00:00Z", updated_at: "2026-08-11T01:05:00Z", archived_at: null,
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -322,16 +311,14 @@ describe("App", () => {
       if (url === "/api/v1/analysis-tasks?limit=200") return new Response(JSON.stringify({ items: [task], next_cursor: null }), { status: 200 });
       if (url === "/api/v1/analysis-tasks/task-run-id/runs") {
         return new Response(JSON.stringify([{
-          analysis_id: "exec-selected", task_id: "task-run-id", parent_analysis_id: null, work_key: null,
-          sequence: 1, status: "running",
-          created_at: "2026-08-11T01:04:00Z", completed_at: null, result_id: null,
+          run_id: "exec-selected", task_id: "task-run-id", status: "running",
+          created_at: "2026-08-11T01:04:00Z", completed_at: null,
           direction: null, symbol: "ES", period: "5m",
         }]), { status: 200 });
       }
       if (url === "/api/v1/analysis-runs/exec-selected") {
         return new Response(JSON.stringify({
-          analysis_id: "exec-selected", task_id: "task-run-id", parent_analysis_id: null,
-          work_key: null, sequence: 1, status: "running", mode: "realtime", symbol: "ES",
+          run_id: "exec-selected", task_id: "task-run-id", status: "running", mode: "realtime", symbol: "ES",
           period: "5m", direction: "neutral", terminal_outcome: "running",
           created_at: "2026-08-11T01:04:00Z", updated_at: "2026-08-11T01:04:00Z",
           result: { query: { symbol: "ES", period: "5m", analysis_mode: "realtime" }, bars: [] },
@@ -348,7 +335,7 @@ describe("App", () => {
     render(<App />);
     const expandButton = await screen.findByRole("button", { name: "展开ES 运行记录 · ES · 5m的分析" });
     fireEvent.click(expandButton);
-    fireEvent.click(await screen.findByRole("button", { name: "#1 · 进行中" }));
+    fireEvent.click(await screen.findByRole("button", { name: "5m · 进行中" }));
 
     const dialog = await screen.findByRole("dialog", { name: "任务详情" });
     expect(within(dialog).getByText("运行 ID", { exact: true })).toBeInTheDocument();
@@ -430,12 +417,12 @@ describe("App", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/v1/health") return new Response(JSON.stringify({ status: "ok", api_version: "v1", provider_configured: true, provider_transport: "https", storage_status: "postgresql_configured" }), { status: 200 });
-      if (url === "/api/v1/analysis-tasks" && init?.method === "POST") return new Response(JSON.stringify({ id: "task-1", kind: "analysis", title: "NQ 结构分析", description: "", status: "pending", config: JSON.parse(String(init.body)).config, latest_execution_id: null, version: 1, created_at: "2026-08-12T01:00:00Z", updated_at: "2026-08-12T01:00:00Z", archived_at: null }), { status: 201 });
+      if (url === "/api/v1/analysis-tasks" && init?.method === "POST") return new Response(JSON.stringify({ id: "task-1", kind: "analysis", title: "NQ 结构分析", description: "", status: "pending", config: JSON.parse(String(init.body)).config, version: 1, created_at: "2026-08-12T01:00:00Z", updated_at: "2026-08-12T01:00:00Z", archived_at: null }), { status: 201 });
       if (url === "/api/v1/analysis-tasks/task-1" && init?.method === "PATCH") {
         const body = JSON.parse(String(init.body));
-        return new Response(JSON.stringify({ id: "task-1", kind: "analysis", title: body.title, description: body.description, status: "pending", config: body.config, latest_execution_id: null, version: 2, created_at: "2026-08-12T01:00:00Z", updated_at: "2026-08-12T01:05:00Z", archived_at: null }), { status: 200 });
+        return new Response(JSON.stringify({ id: "task-1", kind: "analysis", title: body.title, description: body.description, status: "pending", config: body.config, version: 2, created_at: "2026-08-12T01:00:00Z", updated_at: "2026-08-12T01:05:00Z", archived_at: null }), { status: 200 });
       }
-      if (url === "/api/v1/analysis-tasks/task-1/executions" && (!init || !init.method || init.method === "GET")) {
+      if (url === "/api/v1/analysis-tasks/task-1/runs" && (!init || !init.method || init.method === "GET")) {
         return new Response(JSON.stringify([]), { status: 200 });
       }
       const background = liveBackgroundResponse(url);
@@ -483,7 +470,7 @@ describe("App", () => {
     fireEvent.click(within(editDialog).getByRole("button", { name: "保存修改" }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url) === "/api/v1/analysis-tasks/task-1" && init?.method === "PATCH" && JSON.parse(String(init.body)).version === 1)).toBe(true));
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/preview"))).toBe(false);
-    expect(fetchMock.mock.calls.some(([url, init]) => String(url).includes("/executions") && init?.method === "POST")).toBe(false);
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).includes("/runs") && init?.method === "POST")).toBe(false);
     expect(await screen.findByText("NQ 修改后 · NQ · 15m")).toBeInTheDocument();
   });
 
@@ -587,7 +574,7 @@ describe("App", () => {
       }
       if (url === "/api/v1/analysis-tasks" && init?.method === "POST") {
         const body = JSON.parse(String(init.body));
-        return new Response(JSON.stringify({ id: "review-task-1", owner_id: "local", kind: body.kind, title: body.title, description: body.description, config: body.config, status: "pending", latest_execution_id: null, version: 1, created_at: "2026-08-12T00:00:00Z", updated_at: "2026-08-12T00:00:00Z" }), { status: 201 });
+        return new Response(JSON.stringify({ id: "review-task-1", owner_id: "local", kind: body.kind, title: body.title, description: body.description, config: body.config, status: "pending", version: 1, created_at: "2026-08-12T00:00:00Z", updated_at: "2026-08-12T00:00:00Z" }), { status: 201 });
       }
       const background = liveBackgroundResponse(url);
       if (background) return background;

@@ -40,7 +40,7 @@ def test_settings_mask_key_and_preserve_existing_key(tmp_path, monkeypatch) -> N
     assert preview.estimated_prompt_tokens > 0
 
     append_usage(TokenUsageRecord(
-        analysis_id="analysis-1", model_id="model-1", model="gpt-5-mini", mode="historical", symbol="ES", period="5m",
+        run_id="analysis-1", model_id="model-1", model="gpt-5-mini", mode="historical", symbol="ES", period="5m",
         prompt_tokens=100, completion_tokens=20, total_tokens=120,
     ))
     usage = get_usage()

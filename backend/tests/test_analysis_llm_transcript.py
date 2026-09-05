@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 
 import anyio
@@ -15,12 +16,22 @@ def test_get_analysis_llm_transcript_returns_latest_stage_text(monkeypatch) -> N
     ]
 
     class FakeRepository:
-        async def get_run_unscoped(self, _analysis_id):
-            return SimpleNamespace(stage_runs_json=rows)
+        async def list_stage_attempts(self, _run_id):
+            return [
+                SimpleNamespace(
+                    stage=row["stage"],
+                    attempt=row["attempt"],
+                    status=row["status"],
+                    raw_content=row["raw_content"],
+                    reasoning_content=row["reasoning_content"],
+                )
+                for row in rows
+            ]
 
     monkeypatch.setattr("app.analysis.tasks.repository.AnalysisTaskRepository", FakeRepository)
 
-    transcript = anyio.run(get_analysis_llm_transcript, "aid-1")
+    run_id = uuid.uuid4()
+    transcript = anyio.run(get_analysis_llm_transcript, run_id)
     assert transcript["stage1"]["content"] == '{"gate_result":"proceed"}'
     assert transcript["stage1"]["reasoning"] == "先看通道。"
     assert transcript["stage2"]["content"] == '{"terminal":{"outcome":"wait"}}'

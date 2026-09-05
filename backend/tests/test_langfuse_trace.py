@@ -52,14 +52,13 @@ def test_call_llm_adds_application_trace_to_langfuse_metadata(monkeypatch) -> No
     tokens = set_trace_context(
         "llm-trace-1",
         task_id="task-1",
-        analysis_id="analysis-1",
-        execution_id="execution-1",
+        run_id="run-1",
     )
     try:
         async def invoke():
             return await call_llm(
                 "system",
-                {"analysis_id": "analysis-1"},
+                {"run_id": "analysis-1"},
                 on_delta=lambda _delta: None,
             )
 
@@ -74,8 +73,7 @@ def test_call_llm_adds_application_trace_to_langfuse_metadata(monkeypatch) -> No
         "model": "gpt-test",
         "trace_id": "llm-trace-1",
         "task_id": "task-1",
-        "analysis_id": "analysis-1",
-        "execution_id": "execution-1",
+        "run_id": "run-1",
     }
 
 
@@ -93,7 +91,7 @@ def test_call_llm_works_when_langfuse_is_disabled(monkeypatch) -> None:
     async def invoke():
         return await call_llm(
             "system",
-            {"analysis_id": "analysis-1"},
+            {"run_id": "analysis-1"},
             on_delta=lambda _delta: None,
         )
 

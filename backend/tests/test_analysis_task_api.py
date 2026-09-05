@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
+import anyio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.analysis.tasks.models import TaskStatus
-from app.analysis.routes import get_analysis_task_repository, router
+from app.analysis.history.snapshots import FrozenInputSnapshot
+from app.analysis.routes import get_analysis_task_repository, router, start_analysis_task_run
+from app.analysis.tasks.repository import RunCreateSpec
+from app.auth.service import UserPublic
 
 
 class FakeTask:
@@ -20,8 +25,6 @@ class FakeTask:
         "symbol": "ES",
         "period": "5m",
     }
-    latest_execution_id = None
-    latest_analysis_id = None
     version = 1
     created_at = datetime.now(timezone.utc)
     updated_at = created_at
@@ -102,3 +105,48 @@ def test_pending_task_update_returns_incremented_version() -> None:
     assert response.status_code == 200
     assert response.json()["title"] == "修改后的任务"
     assert response.json()["version"] == 2
+
+
+def test_start_task_returns_flat_run_items_and_starts_each_run(monkeypatch) -> None:
+    task = FakeTask()
+    snapshot = FrozenInputSnapshot(
+        id=uuid.uuid4(), task_id=task.id, user_id=None,
+        query_json={"symbol": "ES", "period": "5m", "analysis_mode": "historical"},
+        resolved_symbol="ES", bars_json=[], bars_hash="hash", prompt_versions_json={},
+        model_config_json={}, confirmation_id="confirm", expires_at=task.created_at,
+        created_at=task.created_at,
+    )
+
+    class Repository:
+        async def get_task(self, *_args):
+            return task
+
+        async def create_runs_for_task(self, _owner, _task_id, specs: list[RunCreateSpec]):
+            assert [spec.period for spec in specs] == ["5m"]
+            return [SimpleNamespace(id=uuid.uuid4(), period="5m", status="queued")]
+
+    class Manager:
+        started: list[uuid.UUID] = []
+
+        def start(self, run_id, _trace_id):
+            self.started.append(run_id)
+
+    async def fake_snapshot(*_args, **_kwargs):
+        return snapshot
+
+    monkeypatch.setattr("app.analysis.routes.create_input_snapshot", fake_snapshot)
+    manager = Manager()
+    result = anyio.run(
+        start_analysis_task_run,
+        task.id,
+        UserPublic(id=None, username="local", role="admin", auth_required=False),
+        Repository(),
+        manager,
+        object(),
+        object(),
+    )
+
+    assert len(result) == 1
+    assert result[0].period == "5m"
+    assert result[0].status == "queued"
+    assert manager.started == [result[0].run_id]

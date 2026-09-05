@@ -6,10 +6,18 @@ from app.core.errors import AppError
 
 _TASK_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.pending: {TaskStatus.running},
-    TaskStatus.running: {TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled},
-    TaskStatus.failed: {TaskStatus.running},
-    TaskStatus.cancelled: {TaskStatus.running},
+    TaskStatus.running: {
+        TaskStatus.completed,
+        TaskStatus.completed_with_warnings,
+        TaskStatus.failed,
+        TaskStatus.cancelled,
+        TaskStatus.timed_out,
+    },
+    TaskStatus.failed: set(),
+    TaskStatus.cancelled: set(),
     TaskStatus.completed: set(),
+    TaskStatus.completed_with_warnings: set(),
+    TaskStatus.timed_out: set(),
 }
 
 _RUN_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
@@ -43,12 +51,10 @@ _RUN_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
 }
 
 
-def transition_task(current: TaskStatus, target: TaskStatus, *, repeatable: bool = False) -> TaskStatus:
-    if repeatable and current is TaskStatus.completed and target is TaskStatus.running:
-        return target
+def transition_task(current: TaskStatus, target: TaskStatus) -> TaskStatus:
     if target in _TASK_TRANSITIONS[current]:
         return target
-    code = "analysis_task_completed" if current is TaskStatus.completed else "invalid_task_transition"
+    code = "analysis_task_already_executed" if current is not TaskStatus.pending else "invalid_task_transition"
     raise AppError(code, f"分析任务不能从 {current.value} 变为 {target.value}", 409)
 
 

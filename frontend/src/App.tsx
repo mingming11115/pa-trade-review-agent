@@ -1,6 +1,6 @@
 import { ChangeEvent, CSSProperties, FormEvent, KeyboardEvent, PointerEvent, ReactNode, useEffect, useRef, useState } from "react";
 
-import { analyzeRangeStream, cancelRun, confirmTradeImport, createAnalysisTask, createTrade, deleteTrade, ensureLiveAnalysisTask, getAdminOrchestration, getAdminPromptFile, getAlerts, getAlertRules, getAnalysisDetail, getAnalysisHistory, getCollectionStatus, getCurrentUser, getDebugPreview, getFollowupHistory, getHealth, getMarketBars, getPersonalSettings, getPromptVersions, getRecentTrades, getRunDetail, getTokenUsage, getTradeImports, listAnalysisTaskRuns, listAnalysisTasks, login, logout, markAlertRead, previewTradeImport, rollbackPromptVersion, saveAdminPromptFile, saveAlertRule, savePersonalSettings, sendFollowupStream, startAnalysisTaskRun, updateAnalysisTask, updateTrade } from "./api";
+import { analyzeRangeStream, cancelRun, confirmTradeImport, createAnalysisTask, createTrade, deleteTrade, ensureLiveAnalysisTask, getAdminOrchestration, getAdminPromptFile, getAlerts, getAlertRules, getAnalysisDetail, getAnalysisHistory, getCollectionStatus, getCurrentUser, getDebugPreview, getFollowupHistory, getHealth, getMarketBars, getPersonalSettings, getPromptVersions, getRecentTrades, getRunDetail, getTokenUsage, getTradeImports, listAnalysisTaskRuns, listAnalysisTasks, login, logout, markAlertRead, previewTradeImport, rollbackPromptVersion, saveAdminPromptFile, saveAlertRule, savePersonalSettings, sendFollowupStream, startAnalysisTaskRun, updateAnalysisTask, updateTrade, waitForRunsTerminal } from "./api";
 import { TradingChart } from "./TradingChart";
 import { DecisionFlowViz } from "./DecisionFlowViz";
 import { MoreMenu } from "./MoreMenu";
@@ -40,7 +40,7 @@ import type {
   AnalysisStreamEvent,
   FollowupMessage,
   AnalysisTask,
-  AnalysisExecutionListItem,
+  AnalysisRunListItem,
 } from "./types";
 import "./styles.css";
 import { findLiveAnalysisTask, normalizeAnalysisSymbol, sidebarTaskFromApi } from "./analysisTasks";
@@ -235,7 +235,7 @@ interface WorkbenchData {
   notes: string[];
   stage1?: Stage1Result;
   stage2?: Stage2Result;
-  analysisId?: string;
+  runId?: string;
   reviewResult?: TradeReviewResult[] | null;
   audit?: AnalysisAudit;
 }
@@ -256,7 +256,6 @@ interface SidebarTask {
   config: TaskComposer;
   summary: Array<{ label: string; value: string }>;
   status?: AnalysisTask["status"];
-  latestExecutionId?: string | null;
   version: number;
 }
 
@@ -414,7 +413,7 @@ function toWorkbenchData(result: DemoAnalysisResponse, mode: Mode, loading = fal
       : buildNotes(result.resolved_symbol, result.bars),
     stage1: result.stage1,
     stage2: result.stage2,
-    analysisId: result.analysis_id,
+    runId: result.run_id,
     reviewResult: result.review_result,
     audit: result.audit,
   };
@@ -510,6 +509,10 @@ export function ReviewWorkbenchShell() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const analysisAbortRef = useRef<AbortController | null>(null);
   const followupAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    analysisAbortRef.current?.abort();
+    followupAbortRef.current?.abort();
+  }, []);
   const centerPanelRef = useRef<HTMLElement>(null);
   const rightPanelRef = useRef<HTMLElement>(null);
   const decisionTabRefs = useRef<Partial<Record<DecisionView, HTMLButtonElement | null>>>({});
@@ -688,7 +691,8 @@ export function ReviewWorkbenchShell() {
   });
   const stageCards = buildStages(mode, loading, Boolean(activeData), unavailable);
   const stats = buildStats(mode, session, activeData, health);
-  const followupMessages = activeData?.analysisId ? followupByAnalysis[activeData.analysisId] ?? [] : [];
+  const _activeRunId = activeData?.runId;
+  const followupMessages = _activeRunId ? followupByAnalysis[_activeRunId] ?? [] : [];
   const rightPanelTitle = workbenchMode === "review" ? "AI 复盘面板" : mode === "live" ? "AI 实时面板" : "AI 区间面板";
   const rightPanelDetail = workbenchMode === "review"
     ? "思考 · 行动 · 观察"
@@ -947,14 +951,12 @@ export function ReviewWorkbenchShell() {
     }
   }
 
-  function mapExecutionListItem(item: AnalysisExecutionListItem): SidebarNavAnalysisRun {
+  function mapExecutionListItem(item: AnalysisRunListItem): SidebarNavAnalysisRun {
     return {
-      id: item.analysis_id,
-      sequence: item.sequence ?? 0,
+      id: item.run_id,
       status: item.status,
       createdAt: item.created_at,
-      resultId: null,
-      analysisId: item.analysis_id,
+      runId: item.run_id,
       direction: item.direction,
       symbol: item.symbol,
       period: item.period,
@@ -982,7 +984,7 @@ export function ReviewWorkbenchShell() {
     setActiveSidebarLeaf(`run:${run.id}`);
     setWorkbenchMode("analysis");
     setSidebarOpen((current) => ({ ...current, analysis: true }));
-    if (!run.analysisId || !["completed", "completed_with_warnings"].includes(run.status)) {
+    if (!(run.runId ?? run.id) || !["completed", "completed_with_warnings"].includes(run.status)) {
       const task = tasksByType.analysis.find((item) => item.id === taskId);
       if (task) openRunDetail(task, run);
       return;
@@ -990,7 +992,7 @@ export function ReviewWorkbenchShell() {
     setLoading(true);
     setError(null);
     try {
-      const detail = await getRunDetail(run.analysisId);
+      const detail = await getRunDetail(run.runId ?? run.id);
       const result = detail.result as DemoAnalysisResponse;
       const targetMode: Mode = result.query?.analysis_mode === "realtime" ? "live" : "range";
       const transcript = result.llm_transcript ?? {
@@ -1023,8 +1025,8 @@ export function ReviewWorkbenchShell() {
       ]);
       setTaskDetails(null);
     } catch (caught) {
-      if (run.analysisId) {
-        await restoreHistory(run.analysisId);
+      if (run.runId) {
+        await restoreHistory(run.runId);
         return;
       }
       setError(caught as ApiError);
@@ -1039,14 +1041,25 @@ export function ReviewWorkbenchShell() {
     setHistoryReplayActive(false);
     setStreamEvents([]);
     setLlmLive({ stage1: { reasoning: "", content: "" }, stage2: { reasoning: "", content: "" } });
+    analysisAbortRef.current?.abort();
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
     try {
-      const execution = await startAnalysisTaskRun(task.id);
+      const executions = await startAnalysisTaskRun(task.id);
       setTaskDetails((current) => current?.task.id === task.id
-        ? { ...current, task: { ...current.task, status: "running", latestExecutionId: execution.analysis_id } }
+        ? { ...current, task: { ...current.task, status: "running" } }
         : current);
-      setTasksByType((current) => ({ ...current, [task.type]: current[task.type].map((item) => item.id === task.id ? { ...item, status: "running", latestExecutionId: execution.analysis_id } : item) }));
-      const detail = await getRunDetail(execution.analysis_id);
+      setTasksByType((current) => ({ ...current, [task.type]: current[task.type].map((item) => item.id === task.id ? { ...item, status: "running" } : item) }));
+      const details = await waitForRunsTerminal(executions.map((item) => item.run_id), { intervalMs: 500, timeoutMs: 60_000, signal: controller.signal });
+      const detail = details[0];
+      if (!detail) return;
       const payloadResult = detail.result;
+      if (detail.mode === "trade_review") {
+        setStreamEvents((current) => [...current, { type: "status", stage: "complete", message: `复盘 ${detail.period} · ${detail.status}` }]);
+        await refreshDurableTasks();
+        await loadAnalysisRuns(task.id);
+        return;
+      }
       if (payloadResult && "review_children" in payloadResult) {
         setStreamEvents((current) => [...current, { type: "status", stage: "complete", message: "复盘完成" }]);
         const primary = payloadResult.review_children[0];
@@ -1058,9 +1071,9 @@ export function ReviewWorkbenchShell() {
         setWorkbenchMode("review"); setMode("historical");
         setResults((current) => ({ ...current, historical: data }));
         setFeed({ kind: "history", symbol: primary.query.symbol, period: primary.query.period, bars: primary.bars, lastClosedTs: lastClosedTs(primary.bars), pollError: null });
-        const primaryAnalysisId = primary.analysis_id ?? "";
-        if (primaryAnalysisId) {
-          setFollowupByAnalysis((current) => ({ ...current, [primaryAnalysisId]: [] }));
+        const primaryRunId = primary.run_id;
+        if (primaryRunId) {
+          setFollowupByAnalysis((current) => ({ ...current, [primaryRunId]: [] }));
         }
         return;
       }
@@ -1071,9 +1084,9 @@ export function ReviewWorkbenchShell() {
         setMode(targetMode);
         setResults((current) => ({ ...current, [targetMode]: toWorkbenchData(result, targetMode, false, unavailable) }));
         setFeed({ kind: targetMode === "live" ? "live" : "history", symbol: result.query.symbol, period: result.query.period, bars: result.bars, lastClosedTs: lastClosedTs(result.bars), pollError: null });
-        const analysisId = result.analysis_id ?? "";
-        if (analysisId) {
-          setFollowupByAnalysis((current) => ({ ...current, [analysisId]: [] }));
+        const runIdForFollowup = result.run_id;
+        if (runIdForFollowup) {
+          setFollowupByAnalysis((current) => ({ ...current, [runIdForFollowup]: [] }));
         }
       }
       await refreshDurableTasks();
@@ -1081,12 +1094,16 @@ export function ReviewWorkbenchShell() {
       setExpandedAnalysisTasks((current) => ({ ...current, [task.id]: true }));
       setTaskDetails(null);
     } catch (caught) { setError(caught as ApiError); }
-    finally { setLoading(false); }
+    finally {
+      if (analysisAbortRef.current === controller) analysisAbortRef.current = null;
+      setLoading(false);
+    }
   }
 
   async function cancelSavedTask(task: SidebarTask) {
-    if (!task.latestExecutionId) return;
-    try { await cancelRun(task.latestExecutionId); await refreshDurableTasks(); }
+    const runIdToCancel = analysisRunsByTask[task.id]?.find((run) => run.status === "queued" || run.status === "running")?.runId;
+    if (!runIdToCancel) return;
+    try { await cancelRun(runIdToCancel); await refreshDurableTasks(); }
     catch (caught) { setError(caught as ApiError); }
   }
 
@@ -1162,19 +1179,19 @@ export function ReviewWorkbenchShell() {
     } catch (caught) { setError(caught as ApiError); } finally { setLoading(false); }
   }
 
-  async function loadFollowupHistory(analysisId: string) {
+  async function loadFollowupHistory(runId: string) {
     try {
-      const messages = await getFollowupHistory(analysisId);
-      setFollowupByAnalysis((current) => ({ ...current, [analysisId]: messages }));
+      const messages = await getFollowupHistory(runId);
+      setFollowupByAnalysis((current) => ({ ...current, [runId]: messages }));
     } catch {
-      setFollowupByAnalysis((current) => ({ ...current, [analysisId]: [] }));
+      setFollowupByAnalysis((current) => ({ ...current, [runId]: [] }));
     }
   }
 
-  async function restoreHistory(analysisId: string) {
+  async function restoreHistory(runId: string) {
     setLoading(true);
     try {
-      const detail = await getAnalysisDetail(analysisId);
+      const detail = await getAnalysisDetail(runId);
       const targetMode: Mode = detail.query.analysis_mode === "realtime" ? "live" : detail.query.analysis_mode === "trade_review" ? "historical" : "range";
       const restoredBars = detail.bars ?? [];
       const asOf = lastClosedTs(restoredBars);
@@ -1217,7 +1234,7 @@ export function ReviewWorkbenchShell() {
         },
       ]);
       setHistoryOpen(false);
-      void loadFollowupHistory(analysisId);
+      void loadFollowupHistory(runId);
     } catch (caught) { setError(caught as ApiError); } finally { setLoading(false); }
   }
 
@@ -1431,9 +1448,9 @@ export function ReviewWorkbenchShell() {
   }
 
   async function sendFollowup() {
-    const analysisId = activeData?.analysisId;
+    const runId = activeData?.runId;
     const question = followupDraft.trim();
-    if (!analysisId || !question || followupSending) return;
+    if (!runId || !question || followupSending) return;
 
     followupAbortRef.current?.abort();
     const controller = new AbortController();
@@ -1446,8 +1463,8 @@ export function ReviewWorkbenchShell() {
     setError(null);
     setFollowupByAnalysis((current) => ({
       ...current,
-      [analysisId]: [
-        ...(current[analysisId] ?? []),
+      [runId]: [
+        ...(current[runId] ?? []),
         { id: userId, role: "user", content: question },
         { id: assistantId, role: "assistant", content: "", pending: true },
       ],
@@ -1455,7 +1472,7 @@ export function ReviewWorkbenchShell() {
 
     try {
       await sendFollowupStream(
-        analysisId,
+        runId,
         {
           question,
           bars: chartBars,
@@ -1465,10 +1482,10 @@ export function ReviewWorkbenchShell() {
         (event) => {
           if (event.type !== "delta" && event.type !== "done") return;
           setFollowupByAnalysis((current) => {
-            const list = current[analysisId] ?? [];
+            const list = current[runId] ?? [];
             return {
               ...current,
-              [analysisId]: list.map((message) => {
+              [runId]: list.map((message) => {
                 if (message.id !== assistantId) return message;
                 if (event.type === "done") {
                   return { ...message, content: event.content ?? message.content, pending: false };
@@ -1482,7 +1499,7 @@ export function ReviewWorkbenchShell() {
       );
       setFollowupByAnalysis((current) => ({
         ...current,
-        [analysisId]: (current[analysisId] ?? []).map((message) => (
+        [runId]: (current[runId] ?? []).map((message) => (
           message.id === assistantId ? { ...message, pending: false } : message
         )),
       }));
@@ -1491,7 +1508,7 @@ export function ReviewWorkbenchShell() {
       setError(caught as ApiError);
       setFollowupByAnalysis((current) => ({
         ...current,
-        [analysisId]: (current[analysisId] ?? []).filter((message) => message.id !== assistantId),
+        [runId]: (current[runId] ?? []).filter((message) => message.id !== assistantId),
       }));
       setFollowupDraft(question);
     } finally {
@@ -1582,9 +1599,9 @@ export function ReviewWorkbenchShell() {
         ...current,
         [nextMode]: toWorkbenchData(response, nextMode, false, unavailable),
       }));
-      const analysisId = response.analysis_id ?? "";
-      if (analysisId) {
-        setFollowupByAnalysis((current) => ({ ...current, [analysisId]: [] }));
+      const responseRunId = response.run_id;
+      if (responseRunId) {
+        setFollowupByAnalysis((current) => ({ ...current, [responseRunId]: [] }));
       }
     } catch (caught) {
       setResults((current) => ({ ...current, [nextMode]: null }));
@@ -1677,9 +1694,9 @@ export function ReviewWorkbenchShell() {
       });
       setSnapshotAsOf(reviewAsOf);
       setResults((current) => ({ ...current, historical: primaryData }));
-      const reviewAnalysisId = responses[0]?.analysis_id ?? "";
-      if (reviewAnalysisId) {
-        setFollowupByAnalysis((current) => ({ ...current, [reviewAnalysisId]: [] }));
+      const reviewRunId = responses[0]?.run_id ?? "";
+      if (reviewRunId) {
+        setFollowupByAnalysis((current) => ({ ...current, [reviewRunId]: [] }));
       }
     } catch (caught) {
       setResults((current) => ({ ...current, historical: null }));
@@ -2143,7 +2160,7 @@ export function ReviewWorkbenchShell() {
                   </section>
                 )}
 
-                {activeData.analysisId && (
+                {activeData.runId && (
                   <section className="panel-card followup-card">
                     <header>
                       <strong>追问助手</strong>
@@ -2407,11 +2424,11 @@ export function ReviewWorkbenchShell() {
             <header><div><strong>分析历史</strong><span>{analysisHistory.length} 条记录 · 数据库行情状态</span></div><button aria-label="关闭" onClick={() => setHistoryOpen(false)} type="button">×</button></header>
             <div className="collection-status-row">{collectionStatus.map((status) => <article className={status.status} key={status.symbol}><strong>{status.symbol}</strong><span>{status.status === "ok" ? "正常" : status.status === "failed" ? "失败" : "待采集"}</span><small>{status.stale_seconds == null ? "尚无数据" : `${Math.round(status.stale_seconds / 60)} 分钟前`}</small></article>)}</div>
             <div className="history-toolbar"><input aria-label="筛选分析历史" onChange={(event) => setHistoryQuery(event.target.value)} placeholder="筛选 ID、品种、周期、模式" value={historyQuery} /></div>
-            <div className="history-list">{analysisHistory.length ? analysisHistory.filter((item) => `${item.analysis_id} ${item.symbol} ${item.period} ${item.mode}`.toLowerCase().includes(historyQuery.toLowerCase())).map((item) => {
-              const isSelected = selectedHistoryId === item.analysis_id;
-              return <article key={item.analysis_id} className={isSelected ? "selected" : ""}>
-                <label><input checked={isSelected} onChange={(event) => setSelectedHistoryId(event.target.checked ? item.analysis_id : null)} type="radio" name="history-select" /><span><strong>{item.symbol} · {item.period}</strong><code className="history-id" title={item.analysis_id}>{item.analysis_id}</code><small>{formatDate(item.created_at)} · {item.mode} · {item.direction}</small></span></label>
-              <div><button onClick={() => void restoreHistory(item.analysis_id)} type="button">打开</button></div>
+            <div className="history-list">{analysisHistory.length ? analysisHistory.filter((item) => `${item.run_id} ${item.symbol} ${item.period} ${item.mode}`.toLowerCase().includes(historyQuery.toLowerCase())).map((item) => {
+              const isSelected = selectedHistoryId === item.run_id;
+              return <article key={item.run_id} className={isSelected ? "selected" : ""}>
+                <label><input checked={isSelected} onChange={(event) => setSelectedHistoryId(event.target.checked ? item.run_id : null)} type="radio" name="history-select" /><span><strong>{item.symbol} · {item.period}</strong><code className="history-id" title={item.run_id}>{item.run_id}</code><small>{formatDate(item.created_at)} · {item.mode} · {item.direction}</small></span></label>
+              <div><button onClick={() => void restoreHistory(item.run_id)} type="button">打开</button></div>
               </article>;
             }) : <p>暂无分析历史。完成一次分析后会自动保存。</p>}</div>
             <footer><span>历史结果包含模型、证据与生成时间，可恢复到工作台。</span></footer>

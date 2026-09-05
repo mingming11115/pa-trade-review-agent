@@ -28,7 +28,7 @@ from app.core.models import Bar
 
 def _sample_result() -> dict:
     return {
-        "analysis_id": "aid-1",
+        "run_id": "aid-1",
         "resolved_symbol": "ESU2",
         "query": {
             "symbol": "ES",
@@ -186,7 +186,7 @@ def test_seed_session_has_pinned_prefix() -> None:
     session = seed_followup_session("aid-1", _sample_result())
     assert [m["role"] for m in session.messages] == ["system", "user", "assistant"]
     assert "追问助手" in session.messages[0]["content"]
-    assert '"analysis_id":"aid-1"' in session.messages[1]["content"].replace(" ", "")
+    assert '"run_id":"aid-1"' in session.messages[1]["content"].replace(" ", "")
     assert "决策回忆摘要" in session.messages[2]["content"]
 
 
@@ -205,7 +205,7 @@ def test_user_turn_puts_kline_before_question() -> None:
     assert "101.8000" in content or "101.8" in content
 
 
-def test_session_store_reuses_same_analysis_id() -> None:
+def test_session_store_reuses_same_run_id() -> None:
     store = FollowupSessionStore()
     first = anyio.run(ensure_followup_session, "aid-1", _sample_result(), store)
     second = anyio.run(ensure_followup_session, "aid-1", _sample_result(), store)
@@ -215,10 +215,10 @@ def test_session_store_reuses_same_analysis_id() -> None:
 def test_followup_messages_persist_and_reload(monkeypatch) -> None:
     persisted: list[dict[str, str]] = []
 
-    async def fake_append(_analysis_id: str, messages: list[dict[str, str]]) -> None:
+    async def fake_append(_run_id: str, messages: list[dict[str, str]]) -> None:
         persisted.extend(messages)
 
-    async def fake_load(_analysis_id: str) -> list[dict[str, str]]:
+    async def fake_load(_run_id: str) -> list[dict[str, str]]:
         return list(persisted)
 
     monkeypatch.setattr("app.followup.service.append_followup_messages", fake_append)
@@ -258,7 +258,7 @@ def test_stream_followup_appends_multi_turn_history(monkeypatch: pytest.MonkeyPa
         events1 = [
             event
             async for event in stream_followup_turn(
-                analysis_id="aid-1",
+                run_id="aid-1",
                 result=_sample_result(),
                 request=FollowupRequest(question="止损要不要挪？", bars=_bars(), symbol="ES", period="5m"),
                 store=store,
@@ -267,7 +267,7 @@ def test_stream_followup_appends_multi_turn_history(monkeypatch: pytest.MonkeyPa
         events2 = [
             event
             async for event in stream_followup_turn(
-                analysis_id="aid-1",
+                run_id="aid-1",
                 result=_sample_result(),
                 request=FollowupRequest(question="那目标呢？", bars=_bars(), symbol="ES", period="5m"),
                 store=store,
@@ -302,7 +302,7 @@ def test_stream_followup_compacts_after_threshold_without_changing_turn_answer(
     async def fake_stream(_messages):
         yield next(replies)
 
-    async def fake_append(_analysis_id, _messages):
+    async def fake_append(_run_id, _messages):
         return None
 
     monkeypatch.setattr("app.followup.service.stream_chat", fake_stream)
@@ -312,7 +312,7 @@ def test_stream_followup_compacts_after_threshold_without_changing_turn_answer(
         events = [
             event
             async for event in stream_followup_turn(
-                analysis_id="aid-compact-stream",
+                run_id="aid-compact-stream",
                 result=_sample_result(),
                 request=FollowupRequest(question="第十一问", bars=_bars(), symbol="ES", period="5m"),
                 store=store,
@@ -332,8 +332,9 @@ def test_stream_followup_compacts_after_threshold_without_changing_turn_answer(
 
 
 def test_followup_endpoint_streams_ndjson(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_history(analysis_id: str):
-        assert analysis_id == "aid-1"
+    async def fake_history(run_id: str, *, user_id):
+        assert run_id == "aid-1"
+        assert user_id is None
         return _sample_result()
 
     async def fake_stream(_messages):
@@ -379,8 +380,8 @@ def test_followup_history_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
         list_followup_history,
     )
 
-    async def fake_load(analysis_id: str):
-        assert analysis_id == "aid-1"
+    async def fake_load(run_id: str):
+        assert run_id == "aid-1"
         return [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "ctx"},

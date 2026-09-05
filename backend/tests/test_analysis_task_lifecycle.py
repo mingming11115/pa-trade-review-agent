@@ -13,30 +13,23 @@ def test_completed_task_cannot_run_again() -> None:
     with pytest.raises(AppError) as caught:
         transition_task(TaskStatus.completed, TaskStatus.running)
 
-    assert caught.value.code == "analysis_task_completed"
+    assert caught.value.code == "analysis_task_already_executed"
 
 
-def test_completed_analysis_task_can_run_again() -> None:
+def test_started_task_terminal_states_cannot_retry() -> None:
     from app.analysis.tasks.lifecycle import transition_task
     from app.analysis.tasks.models import TaskStatus
 
-    assert transition_task(TaskStatus.completed, TaskStatus.running, repeatable=True) is TaskStatus.running
-
-
-def test_completed_review_task_remains_terminal() -> None:
-    from app.analysis.tasks.lifecycle import transition_task
-    from app.analysis.tasks.models import TaskStatus
-
-    with pytest.raises(AppError):
-        transition_task(TaskStatus.completed, TaskStatus.running, repeatable=False)
-
-
-def test_failed_and_cancelled_tasks_can_retry() -> None:
-    from app.analysis.tasks.lifecycle import transition_task
-    from app.analysis.tasks.models import TaskStatus
-
-    assert transition_task(TaskStatus.failed, TaskStatus.running) is TaskStatus.running
-    assert transition_task(TaskStatus.cancelled, TaskStatus.running) is TaskStatus.running
+    for status in (
+        TaskStatus.completed,
+        TaskStatus.completed_with_warnings,
+        TaskStatus.failed,
+        TaskStatus.cancelled,
+        TaskStatus.timed_out,
+    ):
+        with pytest.raises(AppError) as caught:
+            transition_task(status, TaskStatus.running)
+        assert caught.value.code == "analysis_task_already_executed"
 
 
 def test_review_task_requires_selected_trades() -> None:

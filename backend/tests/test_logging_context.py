@@ -30,7 +30,7 @@ def test_trace_context_is_reset_and_filter_adds_business_fields() -> None:
     tokens = set_trace_context(
         "trace-1",
         task_id="task-1",
-        analysis_id="analysis-1",
+        run_id="run-1",
     )
     try:
         record = logging.LogRecord(
@@ -41,14 +41,12 @@ def test_trace_context_is_reset_and_filter_adds_business_fields() -> None:
         assert (
             record.trace_id,
             record.task_id,
-            record.analysis_id,
-            record.execution_id,
-        ) == ("trace-1", "task-1", "analysis-1", "-")
+            record.run_id,
+        ) == ("trace-1", "task-1", "run-1")
         assert get_trace_fields() == {
             "trace_id": "trace-1",
             "task_id": "task-1",
-            "analysis_id": "analysis-1",
-            "execution_id": "-",
+            "run_id": "run-1",
         }
     finally:
         reset_trace_context(tokens)
@@ -59,11 +57,11 @@ def test_trace_context_is_reset_and_filter_adds_business_fields() -> None:
 def test_bind_trace_fields_restores_outer_context() -> None:
     tokens = set_trace_context("trace-outer", task_id="task-outer")
     try:
-        with bind_trace_fields(analysis_id="analysis-child"):
+        with bind_trace_fields(run_id="run-child"):
             assert get_trace_fields()["task_id"] == "task-outer"
-            assert get_trace_fields()["analysis_id"] == "analysis-child"
+            assert get_trace_fields()["run_id"] == "run-child"
 
-        assert get_trace_fields()["analysis_id"] == "-"
+        assert get_trace_fields()["run_id"] == "-"
     finally:
         reset_trace_context(tokens)
 

@@ -67,7 +67,7 @@ export interface FeedState {
 }
 
 export type AnalysisRunMode = "trade_review" | "historical" | "realtime";
-export type AnalysisTaskStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type AnalysisTaskStatus = "pending" | "running" | "completed" | "completed_with_warnings" | "failed" | "cancelled" | "timed_out";
 
 export interface AnalysisTask {
   id: string;
@@ -76,8 +76,6 @@ export interface AnalysisTask {
   description: string;
   status: AnalysisTaskStatus;
   config: Record<string, unknown>;
-  latest_execution_id: string | null;
-  latest_analysis_id: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -90,12 +88,15 @@ export interface AnalysisTaskPage {
 }
 
 export type AnalysisRunStatus = "queued" | "running" | "completed" | "completed_with_warnings" | "degraded" | "failed" | "cancel_requested" | "cancelled" | "timed_out";
-export interface AnalysisExecution {
-  analysis_id: string;
-  task_id: string | null;
-  parent_analysis_id: string | null;
-  work_key: string | null;
-  sequence: number | null;
+export interface AnalysisRunStartItem {
+  run_id: string;
+  period: string;
+  status: AnalysisRunStatus;
+}
+export interface AnalysisRun {
+  run_id: string;
+  task_id: string;
+  period: string;
   status: AnalysisRunStatus;
   current_stage: string;
   failure_stage: string | null;
@@ -107,27 +108,20 @@ export interface AnalysisExecution {
   created_at: string;
 }
 
-export interface AnalysisExecutionListItem {
-  analysis_id: string;
-  task_id: string | null;
-  parent_analysis_id: string | null;
-  work_key: string | null;
-  sequence: number | null;
+export interface AnalysisRunListItem {
+  run_id: string;
+  task_id: string;
   status: AnalysisRunStatus | string;
   created_at: string;
   completed_at: string | null;
-  result_id: string | null;
   direction: string | null;
   symbol: string | null;
   period: string | null;
 }
 
-export interface AnalysisResultDetail {
-  analysis_id: string;
-  task_id: string | null;
-  parent_analysis_id: string | null;
-  work_key: string | null;
-  sequence: number | null;
+export interface AnalysisRunDetail {
+  run_id: string;
+  task_id: string;
   status: string;
   mode: string;
   symbol: string;
@@ -186,7 +180,7 @@ export interface DemoAnalysisResponse {
   analysis: BasicAnalysis;
   bars: Bar[];
   trade_markers?: TradeMarker[];
-  analysis_id?: string;
+  run_id: string;
   status?: "completed" | "failed";
   snapshot?: AnalysisSnapshot;
   stage1?: Stage1Result;
@@ -226,14 +220,14 @@ export interface FollowupStreamEvent {
   type: "status" | "delta" | "done" | "error";
   message?: string;
   content?: string;
-  analysis_id?: string;
+  run_id?: string;
   turn_count?: number;
   code?: string;
   details?: Array<Record<string, unknown>>;
 }
 
 export interface AnalysisHistorySummary {
-  analysis_id: string;
+  run_id: string;
   mode: string;
   symbol: string;
   period: string;
@@ -243,8 +237,6 @@ export interface AnalysisHistorySummary {
   notes: string;
   tags: string[];
   task_id?: string | null;
-  execution_id?: string | null;
-  result_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -269,7 +261,7 @@ export interface AlertRecord {
 }
 
 export interface AnalysisSnapshot {
-  analysis_id: string;
+  run_id: string;
   mode: "trade_review" | "historical" | "realtime";
   trigger: { type: "manual" | "bar_closed" | "structure_changed" | "periodic"; occurred_at: string };
   market: { symbol: string; contract: string; period: Period; bars: Bar[]; indicators: Record<string, unknown>; tick_size: number | null };
@@ -359,7 +351,7 @@ export interface DebugPreview {
 
 export interface TokenUsageRecord {
   id: string;
-  analysis_id: string;
+  run_id: string;
   occurred_at: string;
   model_id: string | null;
   model: string | null;

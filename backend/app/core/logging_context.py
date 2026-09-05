@@ -11,14 +11,12 @@ from typing import Iterator
 _TRACE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _trace_id_var: ContextVar[str] = ContextVar("pa_trace_id", default="-")
 _task_id_var: ContextVar[str] = ContextVar("pa_task_id", default="-")
-_analysis_id_var: ContextVar[str] = ContextVar("pa_analysis_id", default="-")
-_execution_id_var: ContextVar[str] = ContextVar("pa_execution_id", default="-")
+_run_id_var: ContextVar[str] = ContextVar("pa_run_id", default="-")
 
 _FIELD_VARS = {
     "trace_id": _trace_id_var,
     "task_id": _task_id_var,
-    "analysis_id": _analysis_id_var,
-    "execution_id": _execution_id_var,
+    "run_id": _run_id_var,
 }
 
 
@@ -46,14 +44,12 @@ def set_trace_context(
     trace_id: str,
     *,
     task_id: str | None = None,
-    analysis_id: str | None = None,
-    execution_id: str | None = None,
+    run_id: str | None = None,
 ) -> TraceContextTokens:
     values = {
         "trace_id": trace_id,
         "task_id": task_id or "-",
-        "analysis_id": analysis_id or "-",
-        "execution_id": execution_id or "-",
+        "run_id": run_id or "-",
     }
     return TraceContextTokens(
         {
@@ -72,13 +68,11 @@ def reset_trace_context(tokens: TraceContextTokens) -> None:
 def bind_trace_fields(
     *,
     task_id: str | None = None,
-    analysis_id: str | None = None,
-    execution_id: str | None = None,
+    run_id: str | None = None,
 ) -> Iterator[None]:
     values = {
         "task_id": task_id,
-        "analysis_id": analysis_id,
-        "execution_id": execution_id,
+        "run_id": run_id,
     }
     tokens = {
         name: _FIELD_VARS[name].set(str(value))

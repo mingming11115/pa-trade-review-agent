@@ -116,7 +116,7 @@ class DemoAnalysisResponse(BaseModel):
     resolved_symbol: str
     analysis: BasicAnalysis
     bars: list[Bar]
-    analysis_id: str
+    run_id: str
     status: str
     snapshot: object
     stage1: object

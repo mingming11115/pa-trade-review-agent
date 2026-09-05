@@ -1,151 +1,206 @@
 # 分析领域模型重构设计
 
-## 1. 背景与问题
+## 1. 背景与目标
 
-当前实现把三类不同职责压入 `analysis_runs`：一次运行的生命周期、最终分析结果、以及历史列表需要的用户标注；`stage_runs_json` 又同时承担阶段审计明细。`analysis_tasks.status` 与最近运行的状态重复，历史上多套运行标识在不同契约中也存在概念重叠。
+当前实现混合使用任务、运行、结果、历史及多套运行标识，并用父子 Run 表达复盘拆分。目标模型改为一次性 Task 与平铺 Run：普通分析产生一条 Run，交易复盘按时间周期各产生一条 Run，不再存在父子 Run。
 
-`analysis_history` 曾是独立表，但当前业务读取已转向 `analysis_runs`。因此它不应再作为新的领域实体或新的事实来源。
+本次不迁移旧业务数据。数据库初始化时仅保留行情表及其数据，其他业务表直接删除并按目标 ORM 重新创建。
 
-本设计的目标是明确“任务、运行、结果、可复现输入、审计、用户标注”的边界，让历史成为查询视图而不是另一份业务数据。
+目标：
 
-## 2. 目标与非目标
+- `AnalysisTask` 表示一次性执行配置，创建后最多执行一次。
+- `AnalysisRun` 表示一个时间周期的完整执行，不包含父子关系。
+- 普通 K 线分析 Task 对应一条 Run。
+- 交易复盘 Task 每个所选时间周期对应一条 Run；该 Run 一次处理全部所选交易。
+- 阶段尝试和用户标注独立存储，模型结果保持不可变。
+- API、日志、前端和追问统一使用 `run_id`。
+- 历史、详情、标注和追问严格按当前用户隔离。
+- 前端等待异步 Run 进入持久化终态后再展示结果。
 
-### 目标
+非目标：
 
-- 为每个分析概念指定唯一事实来源。
-- 保留同一任务的多次运行，以及交易复盘的父子运行关系。
-- 支持可复现：能定位一次运行所用的市场输入、提示词版本和模型配置。
-- 让历史列表不依赖复制表，不把用户标注混入模型产出的分析事实。
-- 让阶段重试、失败诊断和 Token 用量可以独立查询与审计。
-- 将 API 主标识收敛为单一 `run_id`。
+- 不保留任何旧业务数据或旧 API 兼容层。
+- 不支持 Task 再次执行、Run 重跑或失败后重试。
+- 不改变 Stage1 / Stage2 分析算法和结构化校验规则。
+- 不新增数据库迁移工具或依赖，不记录迁移版本。
 
-### 非目标
-
-- 不改变 Stage1 / Stage2 的分析算法或 LLM 输出结构。
-- 不改变交易、行情、追问的业务需求。
-- 不在本 Issue 中改变前端信息架构或增加新的用户功能。
-- 不保留 `analysis_history` 作为长期兼容数据源。
-
-## 3. 领域语言
+## 2. 领域模型
 
 | 概念 | 定义 | 生命周期 |
 | --- | --- | --- |
-| 分析任务 `AnalysisTask` | 用户保存的、可重复执行的配置。 | 创建后可编辑、归档。 |
-| 分析运行 `AnalysisRun` | 任务的一次实际执行尝试。 | 排队到终态。 |
-| 分析结果 `AnalysisResult` | 本次运行的结构化业务结论。 | 终态时写入，不可变。 |
-| 阶段尝试 `AnalysisStageAttempt` | Stage1/Stage2 单次调用或校验尝试的审计明细。 | 可追加/更新到运行终态。 |
-| 用户标注 `AnalysisAnnotation` | 收藏、笔记、标签等用户对结果的编辑。 | 独立于模型结果演进。 |
-| 分析历史 | 已结束父运行的列表/详情视图，不是表。 | 由运行、结果和标注查询得到。 |
+| `AnalysisTask` | 用户创建的一次性分析配置。 | 创建后可在执行前编辑；开始执行后不可再次执行或修改。 |
+| `AnalysisRun` | Task 中一个时间周期的完整执行。 | queued → running → 终态。 |
+| `AnalysisStageAttempt` | 某条 Run 的 Stage1/Stage2 单次调用或校验尝试。 | 运行期间追加或更新，Run 结束后只读。 |
+| `AnalysisAnnotation` | 当前用户对 Run 结果的收藏、笔记和标签。 | 独立于模型结果编辑。 |
+| 分析历史 | 已结束 Run 的查询视图，不是独立表。 | 由 Run、结果和当前用户标注组成。 |
 
-## 4. 目标数据模型
+目标关系：
 
 ```text
 analysis_tasks
-  1 ── * analysis_runs (parent_run_id IS NULL)
+  1 ── 1..* analysis_runs
                1 ── * analysis_stage_attempts
-               1 ── 0..1 analysis_annotations
-               1 ── * analysis_runs (parent_run_id IS NOT NULL; review only)
+               1 ── 0..1 analysis_annotations（每用户）
 ```
 
-### 4.1 `analysis_tasks`：任务定义
+不存在 `parent_run_id`、`work_key`、父 Run、子 Run 或运行批次。
 
-保留：`id`、`user_id`、`kind`、`title`、`description`、`config_json`、`version`、`created_at`、`updated_at`、`archived_at`。
+## 3. 数据结构
 
-调整：
+### 3.1 `analysis_tasks`
 
-- 删除任务级 `status`；任务不是一次执行，其当前执行状态从最新父运行推导。
-- `latest_run_id` 可作为查询优化缓存，但不参与业务事实判断。
-- 普通分析任务继续用规范化的 `analysis_symbol` + `analysis_period` 实现“每用户每品种周期仅一个未归档任务”的约束。
+保留：`id`、`user_id`、`kind`、`title`、`description`、`status`、`config_json`、`version`、`created_at`、`updated_at`、`archived_at`。
 
-### 4.2 `analysis_runs`：执行生命周期和可筛选摘要
+规则：
 
-这是最小、稳定的运行表。使用 UUID 主键 `id`（API 公开为 `run_id`），全系统只保留这一套运行标识。
+- `status` 是一次性 Task 的聚合状态。
+- 创建后状态为 `pending`；开始执行后不允许再次执行。
+- 普通分析只有一个周期；复盘配置包含一个或多个唯一周期。
+- 删除 `latest_run_id`，Task 不需要“最近一次运行”缓存。
+- 执行开始后 Task 配置不可修改。
+- 复盘 Task 状态由全部周期 Run 聚合：全部成功为 `completed`，部分成功为 `completed_with_warnings`，全部失败为 `failed`；取消或超时按实际终态聚合。
 
-| 字段组 | 建议字段 |
+### 3.2 `analysis_runs`
+
+使用 UUID 主键 `id`，API 公开为 `run_id`。
+
+| 字段组 | 字段 |
 | --- | --- |
-| 归属与层级 | `id`、`task_id`、`user_id`、`parent_run_id`、`work_key`、`sequence` |
+| 归属 | `id`、`task_id`、`user_id` |
 | 生命周期 | `status`、`current_stage`、`failure_stage`、`failure_code`、`failure_message`、`terminal_reason`、`started_at`、`completed_at`、`heartbeat_at` |
 | 冻结输入 | `query_json`、`resolved_symbol`、`bars_json`、`bars_hash`、`prompt_versions_json`、`model_config_json` |
-| 业务结果 | `result_json`、`schema_version` |
+| 结果 | `result_json`、`schema_version` |
 | 查询摘要 | `mode`、`symbol`、`period`、`direction`、`terminal_outcome`、`duration_ms`、`prompt_tokens`、`completion_tokens`、`total_tokens` |
 | 时间 | `created_at`、`updated_at` |
 
-约束：
+规则：
 
-- 父运行：`parent_run_id`、`work_key` 为 NULL，且 `(task_id, sequence)` 唯一。
-- 子运行：两字段均非空，且 `(parent_run_id, work_key)` 唯一。
-- 同一任务只允许一个活跃父运行（`queued`、`running`、`cancel_requested`）。
+- 删除 `parent_run_id`、`work_key` 和 `sequence`。
+- `(task_id, period)` 唯一，保证一个 Task 每个周期最多一条 Run。
+- 普通 Task 创建一条其配置周期的 Run。
+- 复盘 Task 按所选周期平铺创建 Run；每条 Run 的冻结输入包含全部所选交易及该周期行情。
 - 终态为 `completed`、`completed_with_warnings`、`degraded`、`failed`、`cancelled`、`timed_out`。
+- `task_id` 使用外键指向 `analysis_tasks.id`。
+- `result_json` 保存经过结构化校验的完整结果，写入后不可因用户操作改变。
 
-冻结输入与运行严格一对一，故本次不建立 `analysis_run_inputs`。市场 K 线暂以冻结 JSON 保存在运行行内，以换取复现性；后续仅在输入需要独立权限、独立留存期或迁移至对象存储时，再拆分输入表或快照存储。
+### 3.3 `analysis_stage_attempts`
 
-`result_json` 保存完整、经过结构化校验的 `DemoAnalysisResponse` 或复盘汇总结果，`schema_version` 标注其结构版本。结果与运行严格一对一，故本次不建立 `analysis_results`；运行表同时保存列表筛选需要的方向、结论和状态摘要。
+保存 Run 各分析阶段的调用、重试和校验审计，唯一键为 `(run_id, stage, attempt)`。
 
-### 4.3 `analysis_stage_attempts`：阶段审计
+保存阶段、尝试次数、状态、Provider/模型、请求 ID、Token、耗时、原始内容、标准化输出、校验错误、Provider 错误和提示词元数据。`run_id` 外键指向 `analysis_runs.id`，Run 删除时级联删除阶段尝试。
 
-主键 `id`，唯一键 `(run_id, stage, attempt)`；保存 `status`、provider/model、request ID、用量、耗时、原始内容、推理内容、标准化输出、校验错误、provider 错误、提示词元数据、开始/更新时间。
+模型私有推理内容不通过用户 API 或前端展示。
 
-这替代 `analysis_runs.stage_runs_json`。原始响应/推理内容的权限与留存期需按现有 LLM 数据治理规则控制；前端不展示模型私有思维过程。
+### 3.4 `analysis_annotations`
 
-### 4.4 `analysis_annotations`：用户编辑数据
+保存 `favorite`、`notes`、`tags`、`created_at`、`updated_at`，唯一键为 `(run_id, user_id)`。
 
-以 `(run_id, user_id)` 为主键或唯一键，保存：`favorite`、`notes`、`tags`、`created_at`、`updated_at`。
+`run_id` 外键指向 `analysis_runs.id`，Run 删除时级联删除标注。标注更新不得修改 `analysis_runs.result_json`。
 
-这替代写入 `result_json` 的 `favorite`、`notes`、`tags`，保证模型结论不可被用户操作修改。
+## 4. 执行与 API
 
-## 5. 查询与 API 设计
+### 一次性执行
 
-### 历史
+- `POST /analysis-tasks/{task_id}/runs` 仅允许对 `pending` Task 调用一次。
+- 普通 Task 原子创建一条 Run；复盘 Task 原子创建每个周期一条 Run。
+- 响应返回创建的 Run 列表，每项包含 `run_id`、`period` 和初始状态。
+- Task 已开始或已有任意 Run 时再次调用，返回 `analysis_task_already_executed`（409）。
+- 不提供再次运行、重跑或失败重试入口。
 
-“历史”查询父 `analysis_runs`，左连接当前用户的 `analysis_annotations`：
+### 异步终态
 
-- 列表只读取运行摘要和标注，不加载 `result_json` 或 K 线。
-- 详情按 `run_id` 读取运行行中的输入和结果、阶段审计及标注。
-- 追问以 `run_id` 关联对应结果。
+- 启动接口返回 `202` 后，前端按返回的全部 `run_id` 轮询详情。
+- 轮询持续到所有 Run 进入终态或达到客户端超时。
+- completed 类终态展示结果；failed、cancelled、timed_out 展示对应状态和错误。
+- queued/running 且结果为空时继续等待，不视为成功。
 
-### 任务与运行
+### 历史和权限
 
-- `POST /analysis-tasks/{task_id}/runs` 创建父运行和输入快照，返回 `run_id`。
-- 复盘任务创建父运行后，建立子运行；父运行只保存聚合状态和汇总结果。
-- 任务列表以最新父运行汇总显示运行状态；归档是任务自身状态。
+- 历史列表直接查询终态 `analysis_runs`，不使用独立历史表。
+- 列表、详情、标注更新、追问历史和追问流都必须同时匹配 `run_id` 与当前 `user_id`。
+- 无权访问与资源不存在统一返回 `analysis_not_found`（404）。
+- 历史列表只读取摘要和当前用户标注；详情按需读取冻结输入、结果和允许公开的审计信息。
 
-### 契约迁移
+### 单一公开标识
 
-所有后端路由、前端类型与调用方在同一变更中切换到 `run_id`；不保留旧标识字段或别名路由。
+- `DemoAnalysisResponse`、运行详情、历史、追问事件、日志上下文和前端状态只使用 `run_id`。
+- `analysis_id`、`execution_id`、`result_id`、旧 execution/result 路由和前端兼容回退全部删除。
+- 生产代码不得保留旧运行标识；旧名称只允许出现在描述被删除旧结构的测试断言中。
 
-## 6. 数据迁移与删除策略
+## 5. 数据库直接重建
 
-### 必须先完成的迁移
+### 保留表
 
-1. 创建新表、索引与约束。
-2. 从现有 `analysis_runs` 拆分阶段审计和用户标注；冻结输入与结果继续留在运行表，校验每个父/子运行的行数、哈希和状态一致。
-3. 在同一版本内同步切换后端路由、前端类型和调用方到 `run_id`，移除旧别名路由。
-4. 直接删除 `analysis_history`，不导入、不备份该表中的旧数据。
+仅保留以下表及全部现有数据：
 
-### 删除门禁
+- `market_bars`
+- `market_collection_states`
 
-- 在数据库结构迁移中执行 `DROP TABLE IF EXISTS analysis_history`；不执行数据回填或兼容读取。
-- 删除前只需确认该表是目标表；删除后该表及其中数据不可恢复。
+### 删除并重建的表
 
-## 7. BDD 验收场景
+经用户批准的一次性切换中直接 `DROP TABLE IF EXISTS`：
 
-1. **普通任务重复运行**：给定一个未归档普通任务，当其完成两次运行时，那么任务下有两条父运行，历史列表按时间返回两条，且任务配置不被结果覆盖。
-2. **复盘父子运行**：给定包含两笔交易和两个周期的复盘任务，当运行完成时，那么有一条父运行和四条唯一 `work_key` 的子运行，父运行结果仅汇总子运行结果。
-3. **历史详情可复现**：给定一条完成运行，当读取详情时，那么能取得运行行内的不可变输入、结果和阶段审计；结果没有用户笔记或标签字段。
-4. **标注独立**：给定完成运行，当用户收藏并添加笔记/标签时，那么只更新 `analysis_annotations`，运行的 `result_json` 保持不变。
-5. **旧表删除**：给定数据库存在 `analysis_history`，当结构迁移执行时，那么该表及其数据被删除，运行历史只来自新模型。
-6. **无兼容契约**：给定客户端请求旧资源路径或旧标识字段，当新版本发布后，那么请求不再受支持；所有项目内调用方使用 `run_id` 和新路径。
+- `users`
+- `user_sessions`
+- `audit_events`
+- `prompt_versions`
+- `analysis_tasks`
+- `analysis_runs`
+- `analysis_stage_attempts`
+- `analysis_annotations`
+- `followup_messages`
+- `trades`
+- `trade_import_batches`
+- `alert_rules`
+- `alert_records`
+- `scheduled_job_runs`
+- 旧 `analysis_history`
 
-## 8. 风险与待确认决策
+上述表及数据不迁移、不备份、不可恢复。删除后使用目标 ORM `create_all()` 重建空表；行情表不删除、不重建、不清空。切换完成后删除应用中的 Drop 实现。
 
-| 决策 | 建议 | 需要确认 |
-| --- | --- | --- |
-| 旧表数据 | 直接删除，不迁移、不备份。 | 已确认。 |
-| 主标识 | `run_id` 为 UUID，不保留旧字段或路由兼容。 | 已确认。 |
-| 阶段原文留存 | 独立表、按现有权限控制。 | 原始响应/推理内容保留多久、谁可读取？ |
-| 结果存储 | 结果表保存 JSON，运行表保存摘要。 | 是否有结果全文检索或数据仓库需求？ |
-| 任务状态 | 任务只保留归档，运行状态从最新运行推导。 | UI 是否需要显式“暂停任务”状态？ |
+### 执行约束
 
-## 9. 实施边界
+- 不引入 Alembic，不记录迁移版本。
+- 一次性切换仅允许对已确认的 `tradeagent` 执行；完成后应用启动不得检测旧结构或执行任何 Drop。
+- 全新数据库和已经是目标结构的数据库均只通过 ORM `create_all()` 幂等补齐目标表。
+- 一次性 Drop 与目标结构创建在同一数据库事务中执行；失败时由数据库回滚。
+- 执行前记录将保留和删除的精确表清单；不得使用数据库级 `DROP DATABASE` 或模糊匹配。
+- 用户已在第 9 节追加授权本会话直接切换 `tradeagent`；不授权其他数据库或后续自动删除。
 
-本 Spec 仅定义目标架构。获得批准后，再创建 `plan.md`，按“schema → 数据拆分 → API → 前端 → 删除旧表与旧契约”的顺序实施，并以结构迁移、后端测试、前端测试和构建结果作为验收证据。
+## 6. BDD 验收场景
+
+1. **普通 Task 一次性执行**：给定 pending 普通 Task，当首次执行时创建唯一周期 Run；再次执行返回 409，且不新增 Run。
+2. **复盘按周期平铺**：给定两笔交易和 `5m、1h` 两个周期，当执行复盘 Task 时创建两条平铺 Run；每条 Run 处理两笔交易，不存在父子关系。
+3. **周期唯一**：给定 Task 已有 `5m` Run，当再次创建相同周期 Run 时，数据库唯一约束阻止重复。
+4. **Task 状态聚合**：给定复盘 Task 的多个周期 Run，当全部成功、部分成功或全部失败时，Task 分别进入 completed、completed_with_warnings 或 failed。
+5. **无重跑和重试**：给定任意已开始 Task 或终态 Run，当用户尝试再次执行或重试时，请求不受支持且数据不改变。
+6. **历史详情可复现**：给定完成 Run，当读取详情时返回不可变输入、结果和允许公开的阶段审计；结果不包含用户笔记或标签。
+7. **标注独立**：给定完成 Run，当用户更新收藏、笔记或标签时，只更新 `analysis_annotations`，`result_json` 保持不变。
+8. **用户隔离**：给定用户 A 和 B 各有 Run，当 A 使用 B 的 `run_id` 读取详情、更新标注或追问时，返回与不存在一致的 404。
+9. **异步终态**：给定详情依次返回 queued、running、completed，当用户启动分析时，前端持续等待并展示 completed 结果；失败、取消和超时显示对应终态。
+10. **单一契约**：给定新 API 响应和前端调用，当检查契约时，只存在 `run_id`，不存在 `analysis_id`、`execution_id` 或 `result_id`。
+11. **数据库直接重建**：给定数据库包含行情和其他业务表，当初始化执行时，行情两表及其数据保持不变，其他业务表被 Drop 后按目标结构重建为空表。
+12. **关联完整性**：给定 Run 存在阶段尝试和标注，当 Run 被删除时，关联行级联删除，不留下孤儿数据。
+
+## 7. 风险与边界
+
+- 用户、会话、审计、提示词版本、任务、运行、追问、交易、导入、告警和调度记录都会永久删除。
+- 删除用户后需要通过现有初始化方式重新创建管理员或用户，否则认证功能不可用。
+- 只保留行情 K 线与采集状态；`scheduled_job_runs` 不属于保留数据。
+- PostgreSQL 和 SQLite 都必须验证行情数据在重建前后行数及关键值一致。
+- 真实 PostgreSQL 切换必须以前后摘要验证行情表内容保持不变。
+- 除本次已授权的 `tradeagent` 切换外，不执行数据库删除、提交、推送或发布，除非用户另行明确要求。
+
+## 8. 实施边界
+
+本 Spec 获批后更新 `plan.md`，按“数据库重建 → 平铺 Run 模型 → 权限与契约 → 前端异步终态 → 全量验证与 Review”的顺序实施。所有代码修改遵循 TDD；Blocker 未关闭前不得提交或发布。
+
+## 9. 真实数据库直接切换（2026-09-03 批准）
+
+- 用户明确指定目标为 `localhost:5432/tradeagent`，并授权直接删除旧业务结构，不保留兼容能力。
+- 执行前必须确认 `current_database() = 'tradeagent'`，记录两张行情表的行数与内容摘要，并记录全部待删除表。
+- 一次性执行固定清单 Drop 与目标 ORM 建表；不得连接或修改 `postgres`、`sun`、`pa` 等其他数据库。
+- 执行后必须验证行情表行数与内容摘要不变、旧表不存在、新业务表为空、关键外键和唯一约束存在。
+- 真实数据库切换成功后，删除应用启动时的旧 Schema 检测与自动 Drop 兼容逻辑；`ensure_schema()` 只负责幂等创建目标表。
+- 第三方弃用警告必须定位来源；优先通过显式配置或兼容版本修复，不以全局忽略警告代替解决。
+- 本次授权不包含提交、推送、PR 或发布。

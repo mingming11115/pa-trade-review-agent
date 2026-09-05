@@ -85,9 +85,11 @@ from app.analysis.execution.runs import list_analysis_runs
 from app.analysis.tasks.models import AnalysisRunPublic
 from app.analysis.history.service import (
     AnalysisHistorySummary,
+    AnalysisHistoryUpdate,
     get_analysis_history,
     list_analysis_history,
     persist_analysis_result,
+    update_analysis_history,
 )
 from app.auth.service import LoginInput, UserPublic, audit, bootstrap_admin, current_user, limit_expensive, limiter, login, logout, require_admin
 from app.analysis.routes import router as analysis_task_router
@@ -108,8 +110,7 @@ def _configure_logging() -> None:
     root_logger.setLevel(level)
     formatter = logging.Formatter(
         "%(asctime)s %(levelname)s %(name)s "
-        "trace_id=%(trace_id)s task_id=%(task_id)s "
-        "analysis_id=%(analysis_id)s execution_id=%(execution_id)s %(message)s"
+        "trace_id=%(trace_id)s task_id=%(task_id)s run_id=%(run_id)s %(message)s"
     )
 
     # 控制台日志处理器
@@ -526,30 +527,46 @@ async def analyses(
     symbol: str | None = Query(None, max_length=100),
     period: str | None = Query(None, pattern="^(1m|5m|15m|30m|1h|4h|1d)$"),
     mode: str | None = Query(None, pattern="^(trade_review|historical|realtime)$"),
-    _: UserPublic = Depends(current_user),
+    user: UserPublic = Depends(current_user),
 ) -> list[AnalysisHistorySummary]:
-    """列出分析历史摘要，支持按标的、周期、模式过滤。"""
-    return await list_analysis_history(limit=limit, symbol=symbol, period=period, mode=mode)
+    """列出分析历史摘要，支持按标的、周期、模式过滤（含当前用户标注）。"""
+    return await list_analysis_history(
+        limit=limit,
+        symbol=symbol,
+        period=period,
+        mode=mode,
+        user_id=user.id,
+    )
 
 
-@app.get("/api/v1/analyses/{analysis_id}")
-async def analysis_detail(analysis_id: str, _: UserPublic = Depends(current_user)):
-    """根据 analysis_id 获取单次分析的完整详情。"""
-    return await get_analysis_history(analysis_id)
+@app.get("/api/v1/analyses/{run_id}")
+async def analysis_detail(run_id: str, user: UserPublic = Depends(current_user)):
+    """根据 run_id 获取单次分析的完整详情。"""
+    return await get_analysis_history(run_id, user_id=user.id)
 
 
-@app.post("/api/v1/analyses/{analysis_id}/followup/stream")
+@app.patch("/api/v1/analyses/{run_id}", response_model=AnalysisHistorySummary)
+async def analysis_annotation_update(
+    run_id: str,
+    update: AnalysisHistoryUpdate,
+    user: UserPublic = Depends(current_user),
+) -> AnalysisHistorySummary:
+    """更新当前用户对指定 Run 的收藏、笔记和标签。"""
+    return await update_analysis_history(run_id, update, user_id=user.id)
+
+
+@app.post("/api/v1/analyses/{run_id}/followup/stream")
 async def analysis_followup_stream(
-    analysis_id: str,
+    run_id: str,
     payload: FollowupRequest,
-    _: UserPublic = Depends(limit_expensive),
+    user: UserPublic = Depends(limit_expensive),
 ):
     """对已有分析结果进行流式追问对话，实时返回 LLM 回复片段。"""
-    result = await get_analysis_history(analysis_id)
+    result = await get_analysis_history(run_id, user_id=user.id)
 
     async def events():
         try:
-            async for event in stream_followup_turn(analysis_id=analysis_id, result=result, request=payload):
+            async for event in stream_followup_turn(run_id=run_id, result=result, request=payload):
                 yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
         except AppError as exc:
             yield json.dumps(
@@ -570,10 +587,14 @@ async def analysis_followup_stream(
     )
 
 
-@app.get("/api/v1/analyses/{analysis_id}/followup/history", response_model=list[FollowupMessagePublic])
-async def analysis_followup_history(analysis_id: str, _: UserPublic = Depends(current_user)) -> list[FollowupMessagePublic]:
+@app.get("/api/v1/analyses/{run_id}/followup/history", response_model=list[FollowupMessagePublic])
+async def analysis_followup_history(
+    run_id: str,
+    user: UserPublic = Depends(current_user),
+) -> list[FollowupMessagePublic]:
     """获取指定分析的追问对话历史消息。"""
-    return await list_followup_history(analysis_id)
+    await get_analysis_history(run_id, user_id=user.id)
+    return await list_followup_history(run_id)
 
 
 @app.post("/api/v1/analysis/debug-preview", response_model=DebugPreview)
@@ -654,10 +675,10 @@ async def admin_prompt_diff(left_id: uuid.UUID, right_id: uuid.UUID, filename: s
 @app.get("/api/v1/admin/analysis-runs", response_model=list[AnalysisRunPublic])
 async def admin_analysis_runs(
     limit: int = Query(100, ge=1, le=500),
-    analysis_id: str | None = Query(None, max_length=64),
+    run_id: str | None = Query(None, max_length=64),
 ) -> list[AnalysisRunPublic]:
-    """列出分析运行记录（管理员专用），可按 analysis_id 过滤。"""
-    return await list_analysis_runs(limit, analysis_id)
+    """列出分析运行记录（管理员专用），可按 run_id 过滤。"""
+    return await list_analysis_runs(limit, run_id)
 
 
 async def _read_trade_upload(file: UploadFile) -> bytes:

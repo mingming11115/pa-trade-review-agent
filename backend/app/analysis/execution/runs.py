@@ -19,8 +19,17 @@ _STAGE_RUNS: dict[str, list[dict[str, Any]]] = {}
 _STAGE_RUN_INDEX: dict[uuid.UUID, tuple[str, str, int]] = {}
 
 
-def get_stage_runs(analysis_id: str) -> list[dict[str, Any]]:
-    return list(_STAGE_RUNS.get(analysis_id, []))
+def get_stage_runs(run_id: str) -> list[dict[str, Any]]:
+    return list(_STAGE_RUNS.get(run_id, []))
+
+
+def clear_stage_runs(run_id: str) -> None:
+    """释放指定 Run 的临时阶段记录，避免一次性运行完成后残留内存。"""
+    records = _STAGE_RUNS.pop(run_id, [])
+    record_ids = {str(record.get("id")) for record in records}
+    for record_id in list(_STAGE_RUN_INDEX):
+        if str(record_id) in record_ids:
+            _STAGE_RUN_INDEX.pop(record_id, None)
 
 
 def _empty_llm_transcript() -> dict[str, dict[str, str]]:
@@ -60,15 +69,25 @@ def get_analysis_llm_transcript_from_stage_runs(stage_runs: list[dict[str, Any]]
     return transcript
 
 
-async def get_analysis_llm_transcript(analysis_id: str) -> dict[str, dict[str, str]]:
-    """从新 analysis_runs 表的 stage_runs_json 字段恢复 LLM 转录。"""
+async def get_analysis_llm_transcript(run_id) -> dict[str, dict[str, str]]:
+    """从 `analysis_stage_attempts` 恢复 LLM 转录，不修改运行行结果。"""
     from app.analysis.tasks.repository import AnalysisTaskRepository
 
     repo = AnalysisTaskRepository()
     try:
-        run = await repo.get_run_unscoped(analysis_id)
-        if run and run.stage_runs_json:
-            return get_analysis_llm_transcript_from_stage_runs(run.stage_runs_json)
+        attempts = await repo.list_stage_attempts(uuid.UUID(str(run_id)))
+        if attempts:
+            rows = [
+                {
+                    "stage": attempt.stage,
+                    "attempt": attempt.attempt,
+                    "status": attempt.status,
+                    "raw_content": attempt.raw_content,
+                    "reasoning_content": attempt.reasoning_content,
+                }
+                for attempt in attempts
+            ]
+            return get_analysis_llm_transcript_from_stage_runs(rows)
     except Exception:
         pass
     return _empty_llm_transcript()
@@ -78,7 +97,7 @@ async def get_analysis_llm_transcript(analysis_id: str) -> dict[str, dict[str, s
 
 def new_stage_run(
     *,
-    analysis_id: str,
+    run_id: str,
     stage: str,
     attempt: int,
     status: str,
@@ -100,7 +119,7 @@ def new_stage_run(
 ) -> dict[str, Any]:
     """构造一个 stage-run 明细记录（纯字典，非 ORM）。"""
     record = {
-        "analysis_id": analysis_id,
+        "run_id": run_id,
         "stage": stage,
         "attempt": attempt,
         "status": status,
@@ -121,10 +140,10 @@ def new_stage_run(
         "prompt_metadata": prompt_metadata or {},
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
-    _STAGE_RUNS.setdefault(analysis_id, [])
-    _STAGE_RUNS[analysis_id] = upsert_stage_run(_STAGE_RUNS[analysis_id], record)
+    _STAGE_RUNS.setdefault(run_id, [])
+    _STAGE_RUNS[run_id] = upsert_stage_run(_STAGE_RUNS[run_id], record)
     record_id = uuid.uuid4()
-    _STAGE_RUN_INDEX[record_id] = (analysis_id, stage, attempt)
+    _STAGE_RUN_INDEX[record_id] = (run_id, stage, attempt)
     record["id"] = str(record_id)
     return record
 
@@ -145,7 +164,7 @@ def upsert_stage_run(stage_runs: list[dict[str, Any]], record: dict[str, Any]) -
 async def persist_llm_response(
     response: LLMResponse,
     *,
-    analysis_id: str,
+    run_id: str,
     stage: str,
     attempt: int,
     mode: str,
@@ -154,7 +173,7 @@ async def persist_llm_response(
 ) -> uuid.UUID | None:
     """将 LLM 响应写入内存 stage_runs。"""
     record = new_stage_run(
-        analysis_id=analysis_id,
+        run_id=run_id,
         stage=stage,
         attempt=attempt,
         status="response_received",
@@ -175,7 +194,7 @@ async def persist_llm_response(
 
 async def start_analysis_run(
     *,
-    analysis_id: str,
+    run_id: str,
     stage: str,
     attempt: int,
     mode: str,
@@ -186,7 +205,7 @@ async def start_analysis_run(
 ) -> uuid.UUID | None:
     """创建一条内存中的 stage-run 占位记录。"""
     record = new_stage_run(
-        analysis_id=analysis_id,
+        run_id=run_id,
         stage=stage,
         attempt=attempt,
         status="request_started",
@@ -203,8 +222,8 @@ async def attach_llm_response(run_id: uuid.UUID | None, response: LLMResponse) -
     loc = _STAGE_RUN_INDEX.get(run_id)
     if loc is None:
         return
-    analysis_id, stage, attempt = loc
-    stage_runs = _STAGE_RUNS.get(analysis_id, [])
+    run_id, stage, attempt = loc
+    stage_runs = _STAGE_RUNS.get(run_id, [])
     updated: list[dict[str, Any]] = []
     for item in stage_runs:
         if str(item.get("stage") or "") == stage and int(item.get("attempt") or 0) == attempt:
@@ -225,7 +244,7 @@ async def attach_llm_response(run_id: uuid.UUID | None, response: LLMResponse) -
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
         updated.append(item)
-    _STAGE_RUNS[analysis_id] = updated
+    _STAGE_RUNS[run_id] = updated
 
 
 async def update_analysis_run(
@@ -241,9 +260,9 @@ async def update_analysis_run(
     loc = _STAGE_RUN_INDEX.get(run_id)
     if loc is None:
         return
-    analysis_id, stage, attempt = loc
+    run_id, stage, attempt = loc
     updated: list[dict[str, Any]] = []
-    for item in _STAGE_RUNS.get(analysis_id, []):
+    for item in _STAGE_RUNS.get(run_id, []):
         if str(item.get("stage") or "") == stage and int(item.get("attempt") or 0) == attempt:
             item = dict(item)
             item.update({
@@ -253,11 +272,11 @@ async def update_analysis_run(
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
         updated.append(item)
-    _STAGE_RUNS[analysis_id] = updated
+    _STAGE_RUNS[run_id] = updated
 
 
-async def list_analysis_runs(limit: int = 100, analysis_id: str | None = None) -> list[Any]:
-    """列出新的分析运行行。"""
+async def list_analysis_runs(limit: int = 100, run_id: str | None = None) -> list[Any]:
+    """列出分析运行行。"""
     from app.analysis.tasks.models import AnalysisRun as RunModel
     from app.core.database import SessionFactory, ensure_schema
     from sqlalchemy import desc, select
@@ -265,8 +284,8 @@ async def list_analysis_runs(limit: int = 100, analysis_id: str | None = None) -
     await ensure_schema()
     async with SessionFactory() as session:
         statement = select(RunModel)
-        if analysis_id:
-            statement = statement.where(RunModel.analysis_id == analysis_id)
+        if run_id:
+            statement = statement.where(RunModel.id == uuid.UUID(str(run_id)))
         statement = statement.order_by(desc(RunModel.created_at)).limit(limit)
         records = (await session.scalars(statement)).all()
     return records

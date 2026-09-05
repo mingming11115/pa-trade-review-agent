@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
-from sqlalchemy import CheckConstraint, DateTime, Index, Integer, JSON, String, Text, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -24,8 +24,10 @@ class TaskStatus(str, Enum):
     pending = "pending"
     running = "running"
     completed = "completed"
+    completed_with_warnings = "completed_with_warnings"
     failed = "failed"
     cancelled = "cancelled"
+    timed_out = "timed_out"
 
 
 class RunStatus(str, Enum):
@@ -114,7 +116,6 @@ class AnalysisTask(Base):
     config_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     analysis_symbol: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     analysis_period: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
-    latest_analysis_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
@@ -141,27 +142,15 @@ Index(
 
 
 class AnalysisRun(Base):
-    """一次完整分析运行，主键 `analysis_id` 即跨模块业务标识。
-
-    父运行（任务/同步/流式/告警）持有 `sequence` 且 parent/work_key 均为 NULL；
-    复盘子运行由 `parent_analysis_id` + `work_key` 唯一标识，`sequence` 为 NULL。
-    """
+    """Task 中一个时间周期的完整运行。"""
 
     __tablename__ = "analysis_runs"
-    __table_args__ = (
-        CheckConstraint(
-            "(parent_analysis_id IS NULL AND work_key IS NULL)"
-            " OR (parent_analysis_id IS NOT NULL AND work_key IS NOT NULL)",
-            name="ck_analysis_run_parent_child_shape",
-        ),
-    )
 
-    analysis_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    task_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True, index=True)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     user_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True, index=True)
-    parent_analysis_id: Mapped[str | None] = mapped_column(nullable=True, index=True)
-    work_key: Mapped[str | None] = mapped_column(String(240), nullable=True)
-    sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(40), default=RunStatus.queued.value, index=True)
     current_stage: Mapped[str] = mapped_column(String(40), default="prepare")
     failure_stage: Mapped[str | None] = mapped_column(String(40), nullable=True)
@@ -171,11 +160,13 @@ class AnalysisRun(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    input_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    query_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    resolved_symbol: Mapped[str] = mapped_column(String(100), default="")
     bars_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     bars_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     prompt_versions_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     model_config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
     mode: Mapped[str] = mapped_column(String(40), default="historical", index=True)
     symbol: Mapped[str] = mapped_column(String(100), default="")
     period: Mapped[str] = mapped_column(String(20), default="")
@@ -186,29 +177,78 @@ class AnalysisRun(Base):
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     direction: Mapped[str] = mapped_column(String(20), default="neutral")
     terminal_outcome: Mapped[str] = mapped_column(String(40), default="wait")
-    stage_runs_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 
-Index(
-    "uq_analysis_run_task_sequence",
-    AnalysisRun.task_id,
-    AnalysisRun.sequence,
-    unique=True,
-    postgresql_where=text("sequence IS NOT NULL"),
-    sqlite_where=text("sequence IS NOT NULL"),
-)
-Index(
-    "uq_analysis_run_child_work_key",
-    AnalysisRun.parent_analysis_id,
-    AnalysisRun.work_key,
-    unique=True,
-    postgresql_where=text("parent_analysis_id IS NOT NULL"),
-    sqlite_where=text("parent_analysis_id IS NOT NULL"),
-)
+Index("uq_analysis_run_task_period", AnalysisRun.task_id, AnalysisRun.period, unique=True)
 Index("ix_analysis_runs_symbol_period", AnalysisRun.symbol, AnalysisRun.period)
 Index("ix_analysis_runs_mode_status_created", AnalysisRun.mode, AnalysisRun.status, AnalysisRun.created_at)
+
+
+class AnalysisStageAttempt(Base):
+    """阶段尝试审计：Stage1/Stage2 单次调用或校验尝试的明细，独立于运行行存储。"""
+
+    __tablename__ = "analysis_stage_attempts"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage: Mapped[str] = mapped_column(String(40))
+    attempt: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(40))
+    provider: Mapped[str] = mapped_column(String(120), default="")
+    model: Mapped[str] = mapped_column(String(200), default="")
+    provider_request_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    response_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    raw_content: Mapped[str] = mapped_column(Text, default="")
+    reasoning_content: Mapped[str] = mapped_column(Text, default="")
+    raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    normalized_output: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    validation_errors: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    provider_error: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    prompt_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+Index(
+    "uq_analysis_stage_attempt_run_stage_attempt",
+    AnalysisStageAttempt.run_id,
+    AnalysisStageAttempt.stage,
+    AnalysisStageAttempt.attempt,
+    unique=True,
+)
+
+
+class AnalysisAnnotation(Base):
+    """用户标注：收藏、笔记、标签，独立于模型产出的 `result_json`。"""
+
+    __tablename__ = "analysis_annotations"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    favorite: Mapped[bool] = mapped_column(Boolean, default=False)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
+Index(
+    "uq_analysis_annotation_run_user",
+    AnalysisAnnotation.run_id,
+    AnalysisAnnotation.user_id,
+    unique=True,
+)
 
 
 class AnalysisTaskPublic(BaseModel):
@@ -218,20 +258,17 @@ class AnalysisTaskPublic(BaseModel):
     description: str
     status: TaskStatus
     config: dict[str, Any]
-    latest_analysis_id: str | None
     version: int
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class AnalysisRunPublic(BaseModel):
-    analysis_id: str
-    task_id: uuid.UUID | None
-    parent_analysis_id: str | None
-    work_key: str | None
-    sequence: int | None
+    run_id: uuid.UUID = Field(validation_alias="id")
+    task_id: uuid.UUID
+    period: str
     status: RunStatus
     current_stage: str
     failure_stage: str | None
@@ -241,15 +278,12 @@ class AnalysisRunPublic(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class AnalysisRunListItem(BaseModel):
-    analysis_id: str
-    task_id: uuid.UUID | str | None
-    parent_analysis_id: str | None
-    work_key: str | None
-    sequence: int | None
+    run_id: uuid.UUID = Field(validation_alias="id")
+    task_id: uuid.UUID | str
     status: str
     created_at: datetime
     completed_at: datetime | None
@@ -257,14 +291,12 @@ class AnalysisRunListItem(BaseModel):
     terminal_outcome: str | None
     symbol: str | None
     period: str | None
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class AnalysisRunDetailPublic(BaseModel):
-    analysis_id: str
-    task_id: uuid.UUID | None
-    parent_analysis_id: str | None
-    work_key: str | None
-    sequence: int | None
+    run_id: uuid.UUID = Field(validation_alias="id")
+    task_id: uuid.UUID
     status: str
     mode: str
     symbol: str
@@ -274,6 +306,7 @@ class AnalysisRunDetailPublic(BaseModel):
     created_at: datetime
     updated_at: datetime
     result: dict[str, Any]
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class SnapshotPreviewPublic(BaseModel):
@@ -283,11 +316,6 @@ class SnapshotPreviewPublic(BaseModel):
     resolved_symbol: str
     bars_hash: str
     bar_count: int
-
-
-class StartExecutionInput(BaseModel):
-    snapshot_id: uuid.UUID
-    confirmation_id: str
 
 
 class EnsureLiveAnalysisTaskInput(BaseModel):
@@ -304,12 +332,6 @@ class EnsureLiveAnalysisTaskInput(BaseModel):
         if not normalized:
             raise ValueError("symbol must not be blank")
         return normalized
-
-
-AnalysisExecutionPublic = AnalysisRunPublic
-AnalysisExecutionListItem = AnalysisRunListItem
-AnalysisResultDetailPublic = AnalysisRunDetailPublic
-AnalysisResultPublic = AnalysisRunDetailPublic
 
 
 Index("ix_analysis_tasks_owner_created", AnalysisTask.user_id, AnalysisTask.created_at)

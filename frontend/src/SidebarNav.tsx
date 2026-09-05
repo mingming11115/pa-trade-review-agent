@@ -12,15 +12,12 @@ export interface SidebarNavTask {
 
 export interface SidebarNavAnalysisRun {
   id: string;
-  sequence: number;
   status: string;
   createdAt: string;
-  resultId?: string | null;
-  analysisId?: string | null;
+  runId?: string | null;
   direction?: string | null;
   symbol?: string | null;
   period?: string | null;
-  source?: "execution" | "history";
 }
 
 interface SidebarNavProps {
@@ -100,7 +97,7 @@ function runLabel(run: SidebarNavAnalysisRun): string {
             : run.status;
   const direction =
     run.direction === "long" ? "多" : run.direction === "short" ? "空" : run.direction === "neutral" ? "中性" : null;
-  const parts = [`#${run.sequence}`, statusLabel];
+  const parts = [run.period || "运行", statusLabel];
   if (direction) parts.push(direction);
   return parts.join(" · ");
 }

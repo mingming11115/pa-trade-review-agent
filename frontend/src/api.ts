@@ -26,9 +26,10 @@ import type {
   Bar,
   AnalysisTask,
   AnalysisTaskPage,
-  AnalysisExecution,
-  AnalysisExecutionListItem,
-  AnalysisResultDetail,
+  AnalysisRun,
+  AnalysisRunStartItem,
+  AnalysisRunListItem,
+  AnalysisRunDetail,
 } from "./types";
 
 export function createTraceId(): string {
@@ -210,28 +211,56 @@ export async function ensureLiveAnalysisTask(payload: { symbol: string; period: 
 }
 
 
-export async function startAnalysisTaskRun(taskId: string): Promise<AnalysisExecution> {
+export async function startAnalysisTaskRun(taskId: string): Promise<AnalysisRunStartItem[]> {
   return parseResponse(await apiFetch(`/api/v1/analysis-tasks/${encodeURIComponent(taskId)}/runs`, { method: "POST" }));
 }
 
-export async function listAnalysisTaskRuns(taskId: string): Promise<AnalysisExecutionListItem[]> {
+const TERMINAL_RUN_STATUSES = new Set(["completed", "completed_with_warnings", "degraded", "failed", "cancelled", "timed_out"]);
+
+export async function waitForRunsTerminal(
+  runIds: string[],
+  options: { intervalMs: number; timeoutMs: number; signal: AbortSignal },
+): Promise<AnalysisRunDetail[]> {
+  const startedAt = Date.now();
+  const details = new Map<string, AnalysisRunDetail>();
+  let pending = [...runIds];
+  while (pending.length > 0) {
+    if (options.signal.aborted) throw new DOMException("Aborted", "AbortError");
+    if (Date.now() - startedAt >= options.timeoutMs) throw new Error("等待分析运行终态超时");
+    const polled = await Promise.all(pending.map(getRunDetail));
+    for (const detail of polled) details.set(detail.run_id, detail);
+    pending = pending.filter((runId) => !TERMINAL_RUN_STATUSES.has(details.get(runId)?.status ?? ""));
+    if (pending.length > 0 && options.intervalMs > 0) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(resolve, options.intervalMs);
+        options.signal.addEventListener("abort", () => {
+          window.clearTimeout(timer);
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      });
+    }
+  }
+  return runIds.map((runId) => details.get(runId)!);
+}
+
+export async function listAnalysisTaskRuns(taskId: string): Promise<AnalysisRunListItem[]> {
   return parseResponse(await apiFetch(`/api/v1/analysis-tasks/${encodeURIComponent(taskId)}/runs`));
 }
 
-export async function getRunDetail(analysisId: string): Promise<AnalysisResultDetail> {
-  return parseResponse(await apiFetch(`/api/v1/analysis-runs/${encodeURIComponent(analysisId)}`));
+export async function getRunDetail(runId: string): Promise<AnalysisRunDetail> {
+  return parseResponse(await apiFetch(`/api/v1/analysis-runs/${encodeURIComponent(runId)}`));
 }
 
-export async function cancelRun(analysisId: string): Promise<AnalysisExecution> {
-  return parseResponse(await apiFetch(`/api/v1/analysis-runs/${encodeURIComponent(analysisId)}/cancel`, { method: "POST" }));
+export async function cancelRun(runId: string): Promise<AnalysisRun> {
+  return parseResponse(await apiFetch(`/api/v1/analysis-runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }));
 }
 
 export async function getAnalysisHistory(): Promise<AnalysisHistorySummary[]> {
   return parseResponse<AnalysisHistorySummary[]>(await apiFetch("/api/v1/analyses?limit=200"));
 }
 
-export async function getAnalysisDetail(analysisId: string): Promise<DemoAnalysisResponse & { favorite?: boolean; notes?: string; tags?: string[]; llm_transcript?: DemoAnalysisResponse["llm_transcript"]; }> {
-  return parseResponse(await apiFetch(`/api/v1/analyses/${encodeURIComponent(analysisId)}`));
+export async function getAnalysisDetail(runId: string): Promise<DemoAnalysisResponse & { favorite?: boolean; notes?: string; tags?: string[]; llm_transcript?: DemoAnalysisResponse["llm_transcript"]; }> {
+  return parseResponse(await apiFetch(`/api/v1/analyses/${encodeURIComponent(runId)}`));
 }
 
 
@@ -249,12 +278,12 @@ export async function getPromptVersions(filename: string): Promise<PromptVersion
 export async function rollbackPromptVersion(filename: string, versionId: string): Promise<PromptFileDocument> { const params = new URLSearchParams({ filename }); return parseResponse(await apiFetch(`/api/v1/admin/prompt-versions/${versionId}/rollback?${params}`, { method: "POST" })); }
 
 export async function sendFollowupStream(
-  analysisId: string,
+  runId: string,
   payload: { question: string; bars: Bar[]; symbol?: string; period?: string },
   onEvent: (event: FollowupStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<string> {
-  const response = await apiFetch(`/api/v1/analyses/${encodeURIComponent(analysisId)}/followup/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal });
+  const response = await apiFetch(`/api/v1/analyses/${encodeURIComponent(runId)}/followup/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal });
   if (!response.ok || !response.body) { throw withResponseTrace(await response.json() as ApiError, response); }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -279,6 +308,6 @@ export async function sendFollowupStream(
   return answer;
 }
 
-export async function getFollowupHistory(analysisId: string): Promise<FollowupMessage[]> {
-  return parseResponse(await apiFetch(`/api/v1/analyses/${encodeURIComponent(analysisId)}/followup/history`));
+export async function getFollowupHistory(runId: string): Promise<FollowupMessage[]> {
+  return parseResponse(await apiFetch(`/api/v1/analyses/${encodeURIComponent(runId)}/followup/history`));
 }

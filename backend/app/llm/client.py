@@ -290,13 +290,13 @@ async def call_llm(
     model = profile["model"]
     key = profile["api_key"]
     tools = list_llm_tools()
-    analysis_id = str(payload.get("analysis_id") or payload.get("_analysis_id") or "unknown")
+    run_id = str(payload.get("run_id") or payload.get("_run_id") or "unknown")
     user_content = _build_user_content(payload)
     timeout = httpx.Timeout(180.0, connect=15.0)
     request_started = time.monotonic()
     logger.info(
-        "LLM request analysis_id=%s provider=%s model=%s payload=%s",
-        analysis_id,
+        "LLM request run_id=%s provider=%s model=%s payload=%s",
+        run_id,
         provider,
         model,
         _safe_json({
@@ -308,7 +308,7 @@ async def call_llm(
 
     lf_trace = start_trace(
         "call_llm",
-        user_id=analysis_id,
+        user_id=run_id,
         metadata=_trace_metadata({"provider": provider, "model": model}),
     )
     lf_gen = None
@@ -318,7 +318,7 @@ async def call_llm(
                 name="llm-request",
                 model=model,
                 input={"system": system, "user_content": user_content},
-                metadata=_trace_metadata({"analysis_id": analysis_id, "provider": provider}),
+                metadata=_trace_metadata({"run_id": run_id, "provider": provider}),
             )
         except Exception:
             lf_gen = None
@@ -334,8 +334,8 @@ async def call_llm(
                 request_started=request_started,
             )
             logger.info(
-                "LLM response analysis_id=%s provider=%s model=%s response=%s",
-                analysis_id,
+                "LLM response run_id=%s provider=%s model=%s response=%s",
+                run_id,
                 provider,
                 model,
                 _safe_json(response.raw_response or {
@@ -497,8 +497,8 @@ async def call_llm(
         raw_response=body,
     )
     logger.info(
-        "LLM response analysis_id=%s provider=%s model=%s response=%s",
-        analysis_id,
+        "LLM response run_id=%s provider=%s model=%s response=%s",
+        run_id,
         provider,
         model,
         _safe_json({

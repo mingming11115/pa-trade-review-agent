@@ -64,7 +64,7 @@ class PreviousContext(BaseModel):
 
 # 完整分析快照：分析ID、模式、触发、查询、市场、交易列表、上一轮上下文、生成时间
 class AnalysisSnapshot(BaseModel):
-    analysis_id: UUID
+    run_id: UUID
     mode: AnalysisMode
     trigger: AnalysisTrigger
     query: HistoricalQuery

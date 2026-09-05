@@ -84,7 +84,7 @@ class DemoAnalysisState(TypedDict, total=False):
     memory_key: str  # 记忆存储键
     memory_summary: str  # 记忆摘要（上一轮分析结果）
     trace: list[str]  # 执行轨迹字符串列表
-    analysis_id: uuid.UUID  # 本次分析唯一 ID
+    run_id: uuid.UUID  # 本次分析唯一 ID
     started_at: datetime  # 开始时间
     previous_context: PreviousContext | None  # 上一轮上下文
     snapshot: AnalysisSnapshot  # 分析快照
@@ -159,6 +159,7 @@ class DemoAnalysisWorkflow:
 
     provider: MassiveHistoricalProvider  # 行情数据提供者
     memory_store: AnalysisMemoryStore = DEFAULT_MEMORY_STORE  # 记忆存储
+    run_id: uuid.UUID | None = None  # 由持久化 Run 调用方注入；临时分析则自动生成
     _compiled: Any = field(init=False, repr=False)  # 编译后的 LangGraph 图
     _stream_queue: asyncio.Queue[dict[str, Any] | None] | None = field(default=None, init=False, repr=False)  # 流式事件队列
     _stream_llm_stage: str | None = field(default=None, init=False, repr=False)  # 当前流式 LLM 阶段标识
@@ -190,13 +191,13 @@ class DemoAnalysisWorkflow:
         system: str,
         payload: dict[str, Any],
         *,
-        analysis_id: str,
+        run_id: str,
     ) -> LLMResponse | None:
         """带流式支持的 LLM 调用封装，记录当前阶段并在完成后恢复。"""
         previous = self._stream_llm_stage
         self._stream_llm_stage = stage
         request_payload = dict(payload)
-        request_payload["analysis_id"] = analysis_id
+        request_payload["run_id"] = run_id
         try:
             if self._stream_queue is not None:
                 return await call_llm(system, request_payload, on_delta=self._on_llm_delta)
@@ -529,7 +530,7 @@ class DemoAnalysisWorkflow:
             )
         )
         snapshot = AnalysisSnapshot(
-            analysis_id=state["analysis_id"],
+            run_id=state["run_id"],
             mode=AnalysisMode(query.analysis_mode),
             trigger=AnalysisTrigger(occurred_at=started),
             query=query,
@@ -614,7 +615,7 @@ class DemoAnalysisWorkflow:
             "memory_key": memory_key,
             "memory_summary": str(memory_summary),
             "previous_context": PreviousContext.model_validate(memory_summary) if memory_summary else None,
-            "analysis_id": uuid.uuid4(),
+            "run_id": self.run_id or uuid.uuid4(),
             "started_at": datetime.now(timezone.utc),
             "trace": trace,
         }
@@ -695,7 +696,7 @@ class DemoAnalysisWorkflow:
         analysis = analyze_bars(bars)
         previous = state.get("previous_context")
         snapshot = AnalysisSnapshot(
-            analysis_id=state["analysis_id"],
+            run_id=state["run_id"],
             mode=AnalysisMode(state["query"].analysis_mode),
             trigger=AnalysisTrigger(occurred_at=state["started_at"]),
             query=state["query"],
@@ -797,7 +798,7 @@ class DemoAnalysisWorkflow:
             "stage1",
             messages[0]["content"],
             {"_user_prompt": messages[1]["content"] + retry_text, "_preserve_raw": True},
-            analysis_id=str(state["analysis_id"]),
+            run_id=str(state["run_id"]),
         )
         trace = list(state.get("trace", []))
         trace.append(f"stage1_llm:attempt_{attempt}")
@@ -813,7 +814,7 @@ class DemoAnalysisWorkflow:
         self._record_usage(state, response, f"stage1_attempt_{attempt}")
         run_id = await persist_llm_response(
             response,
-            analysis_id=str(state["analysis_id"]),
+            run_id=str(state["run_id"]),
             stage="stage1",
             attempt=attempt,
             mode=state["query"].analysis_mode,
@@ -985,7 +986,7 @@ class DemoAnalysisWorkflow:
         stage1_frame = state["stage1_frame"]
 
         async def stage1_call(system: str, payload: dict[str, Any]) -> LLMResponse | None:
-            return await self._call_llm_for_stage("stage1", system, payload, analysis_id=str(state["analysis_id"]))
+            return await self._call_llm_for_stage("stage1", system, payload, run_id=str(state["run_id"]))
 
         stage1, stage1_model_called = await execute_original_stage1(
             stage1,
@@ -993,7 +994,7 @@ class DemoAnalysisWorkflow:
             stage1_call,
             lambda result, label: self._record_usage(state, result, label),
             analysis_context={
-                "analysis_id": str(state["analysis_id"]),
+                "run_id": str(state["run_id"]),
                 "mode": state["query"].analysis_mode,
                 "symbol": state["query"].symbol,
                 "period": state["query"].period.value,
@@ -1058,7 +1059,7 @@ class DemoAnalysisWorkflow:
             state["stage2_frame"], state["stage1"], precheck_context=precheck_context
         )
         run_id = await start_analysis_run(
-            analysis_id=str(state["analysis_id"]),
+            run_id=str(state["run_id"]),
             stage="stage2",
             attempt=attempt,
             mode=state["query"].analysis_mode,
@@ -1071,7 +1072,7 @@ class DemoAnalysisWorkflow:
                 "stage2",
                 messages[0]["content"],
                 {"_user_prompt": messages[1]["content"] + retry_text, "_preserve_raw": True},
-                analysis_id=str(state["analysis_id"]),
+                run_id=str(state["run_id"]),
             )
         except Exception as exc:
             await update_analysis_run(
@@ -1353,7 +1354,7 @@ class DemoAnalysisWorkflow:
     def _record_usage(state: DemoAnalysisState, result: LLMResponse, stage: str) -> None:
         """记录 LLM token 用量到全局统计。"""
         append_usage(TokenUsageRecord(
-            analysis_id=str(state["analysis_id"]), model_id=result.model_id, model=result.model,
+            run_id=str(state["run_id"]), model_id=result.model_id, model=result.model,
             mode=f"{state['query'].analysis_mode}:{stage}", symbol=state["query"].symbol, period=state["query"].period.value,
             prompt_tokens=result.prompt_tokens, completion_tokens=result.completion_tokens, total_tokens=result.total_tokens,
         ))
@@ -1557,7 +1558,7 @@ class DemoAnalysisWorkflow:
         """将最终状态转换为 API 响应对象，并写入审计记录。"""
         completed_at = datetime.now(timezone.utc)
         append_stage1_audit({
-            "analysis_id": str(state["analysis_id"]),
+            "run_id": str(state["run_id"]),
             "started_at": state["started_at"].isoformat(),
             "completed_at": completed_at.isoformat(),
             "mode": state["query"].analysis_mode,
@@ -1571,7 +1572,7 @@ class DemoAnalysisWorkflow:
             resolved_symbol=state["resolved_symbol"],
             analysis=state["analysis"],
             bars=state["bars"],
-            analysis_id=str(state["analysis_id"]),
+            run_id=str(state["run_id"]),
             status="completed",
             snapshot=state["snapshot"],
             stage1=state["stage1"],
@@ -1592,9 +1593,11 @@ async def run_demo_analysis_workflow(
     provider: MassiveHistoricalProvider,
     query: HistoricalQuery,
     memory_store: AnalysisMemoryStore = DEFAULT_MEMORY_STORE,
+    *,
+    run_id: uuid.UUID | None = None,
 ) -> DemoAnalysisResponse:
     """创建并同步执行工作流，返回最终分析响应。"""
-    workflow = DemoAnalysisWorkflow(provider=provider, memory_store=memory_store)
+    workflow = DemoAnalysisWorkflow(provider=provider, memory_store=memory_store, run_id=run_id)
     return await workflow.invoke(query)
 
 
@@ -1602,9 +1605,11 @@ async def stream_demo_analysis_workflow(
     provider: MassiveHistoricalProvider,
     query: HistoricalQuery,
     memory_store: AnalysisMemoryStore = DEFAULT_MEMORY_STORE,
+    *,
+    run_id: uuid.UUID | None = None,
 ):
     """创建并流式执行工作流，逐个 yield 进度/推理/结果事件。"""
-    workflow = DemoAnalysisWorkflow(provider=provider, memory_store=memory_store)
+    workflow = DemoAnalysisWorkflow(provider=provider, memory_store=memory_store, run_id=run_id)
     async for event in workflow.stream(query):
         yield event
 
@@ -1625,7 +1630,7 @@ async def build_stage1_debug_preview(
     previous_raw = await memory_store.load(DemoAnalysisWorkflow._memory_key(query))
     previous = PreviousContext.model_validate(previous_raw) if previous_raw else None
     snapshot = AnalysisSnapshot(
-        analysis_id=uuid.uuid4(), mode=AnalysisMode(query.analysis_mode),
+        run_id=uuid.uuid4(), mode=AnalysisMode(query.analysis_mode),
         trigger=AnalysisTrigger(occurred_at=datetime.now(timezone.utc)), query=query,
         market=MarketSnapshot(
             symbol=query.symbol, contract=resolved_symbol, period=query.period.value, bars=bars,

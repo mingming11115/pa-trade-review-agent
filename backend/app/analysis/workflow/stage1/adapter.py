@@ -141,7 +141,7 @@ async def execute_original_stage1(
         context = analysis_context or {}
         run_id = await persist_llm_response(
             response,
-            analysis_id=context.get("analysis_id", "unknown"),
+            run_id=context.get("run_id", "unknown"),
             stage="stage1",
             attempt=attempt,
             mode=context.get("mode", "historical"),

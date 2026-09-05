@@ -702,7 +702,7 @@ async def evaluate_alert_rules(now: datetime) -> None:
             if run:
                 run.status = "completed" if analysis_result else "failed"
                 run.completed_at = datetime.now(UTC)
-                run.detail = {"change_percent": change, "analysis_id": analysis_result.analysis_id if analysis_result else None, "error": analysis_error}
+                run.detail = {"change_percent": change, "run_id": analysis_result.run_id if analysis_result else None, "error": analysis_error}
             rule_row = await session.get(AlertRule, rule.id)
             if rule_row: rule_row.last_run_at = now
             trade_signal = bool(analysis_result and analysis_result.stage2.terminal.outcome == "trade")
@@ -710,6 +710,6 @@ async def evaluate_alert_rules(now: datetime) -> None:
                 direction = "up" if latest.close >= latest.open else "down"
                 signal_key = f"trade:{analysis_result.stage2.decision.direction}" if trade_signal else f"range:{direction}:{rule.threshold}"
                 reason = analysis_result.stage2.terminal.reason if trade_signal else f"已收盘 K 线振幅 {change:.2f}%，达到阈值 {rule.threshold:.2f}%"
-                alert_statement = pg_insert(AlertRecord).values(id=uuid.uuid4(), rule_id=rule.id, bar_opened_at=slot, signal_key=signal_key, title=f"{rule.symbol} {rule.period} {'交易信号' if trade_signal else '波动告警'}", message=reason, evidence={"open": latest.open, "close": latest.close, "change_percent": change, "analysis_id": analysis_result.analysis_id if analysis_result else None}, delivery_status="browser_pending")
+                alert_statement = pg_insert(AlertRecord).values(id=uuid.uuid4(), rule_id=rule.id, bar_opened_at=slot, signal_key=signal_key, title=f"{rule.symbol} {rule.period} {'交易信号' if trade_signal else '波动告警'}", message=reason, evidence={"open": latest.open, "close": latest.close, "change_percent": change, "run_id": analysis_result.run_id if analysis_result else None}, delivery_status="browser_pending")
                 await session.execute(alert_statement.on_conflict_do_nothing(index_elements=[AlertRecord.rule_id, AlertRecord.bar_opened_at, AlertRecord.signal_key]))
             await session.commit()

@@ -8,7 +8,6 @@ export interface SidebarTaskData {
   createdAt: string;
   locked: true;
   status: AnalysisTask["status"];
-  latestExecutionId: string | null;
   version: number;
   config: {
     type: "analysis" | "review";
@@ -45,7 +44,6 @@ export function sidebarTaskFromApi(task: AnalysisTask): SidebarTaskData {
     createdAt: task.created_at,
     locked: true,
     status: task.status,
-    latestExecutionId: task.latest_analysis_id,
     version: task.version,
     config: {
       type: task.kind,
@@ -87,12 +85,6 @@ export function findLiveAnalysisTask<T extends { type: "analysis" | "review"; co
 }
 
 export function taskActions(status: AnalysisTask["status"], kind: AnalysisTask["kind"] = "review"): string[] {
-  if (status === "running") return ["cancel"];
-  if (kind === "analysis") {
-    if (status === "pending" || status === "completed" || status === "failed" || status === "cancelled") return ["run"];
-    return ["open"];
-  }
   if (status === "pending") return ["run"];
-  if (status === "failed" || status === "cancelled") return ["retry"];
   return ["open"];
 }

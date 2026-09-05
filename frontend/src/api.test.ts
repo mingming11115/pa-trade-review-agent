@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { analyzeRangeStream, apiFetch, deleteTrade, getHealth, getMarketBars } from "./api";
+import { analyzeRangeStream, apiFetch, deleteTrade, getHealth, getMarketBars, waitForRunsTerminal } from "./api";
 
 
 describe("market request diagnostics", () => {
@@ -41,6 +41,27 @@ describe("market request diagnostics", () => {
       errorType: "TypeError",
       error: "Failed to fetch",
     }));
+  });
+});
+
+describe("analysis run polling", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("keeps polling queued and running runs until every run is terminal", async () => {
+    const statuses = ["queued", "running", "completed"];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      const status = statuses.shift() ?? "completed";
+      return new Response(JSON.stringify({
+        run_id: "run-1", task_id: "task-1", status, mode: "historical",
+        symbol: "ES", period: "5m", direction: "neutral", terminal_outcome: "wait",
+        created_at: "2026-08-29T00:00:00Z", updated_at: "2026-08-29T00:00:00Z",
+        result: status === "completed" ? { run_id: "run-1" } : {},
+      }), { status: 200 });
+    });
+
+    const result = await waitForRunsTerminal(["run-1"], { intervalMs: 0, timeoutMs: 1000, signal: new AbortController().signal });
+    expect(result[0].status).toBe("completed");
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
   });
 });
 

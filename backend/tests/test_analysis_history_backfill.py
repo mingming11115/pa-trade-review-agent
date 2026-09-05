@@ -1,83 +1,39 @@
+import anyio
+import uuid
 from types import SimpleNamespace
 
-import anyio
-
 from app.analysis.history.service import get_analysis_history
-from app.core.database import Base, ensure_schema
+from app.core.database import Base
 
 
 def test_legacy_analysis_history_table_is_not_registered() -> None:
     assert "analysis_history" not in Base.metadata.tables
 
 
-def test_schema_cleanup_drops_legacy_analysis_history_table(monkeypatch) -> None:
-    statements: list[str] = []
-
-    class FakeConnection:
-        dialect = SimpleNamespace(name="postgresql")
-
-        async def run_sync(self, _callback) -> None:
-            return None
-
-        async def execute(self, statement) -> None:
-            statements.append(str(statement))
-
-    class FakeBegin:
-        async def __aenter__(self) -> FakeConnection:
-            return FakeConnection()
-
-        async def __aexit__(self, *_args) -> None:
-            return None
-
-    class FakeEngine:
-        def begin(self) -> FakeBegin:
-            return FakeBegin()
-
-    monkeypatch.setattr("app.core.database.engine", FakeEngine())
-
-    anyio.run(ensure_schema)
-
-    assert "DROP TABLE IF EXISTS analysis_history" in statements
-
-
-def test_opening_old_history_persists_recovered_llm_transcript(monkeypatch) -> None:
+def test_opening_history_recovers_transcript_without_mutating_result(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    original_result = {"run_id": str(run_id)}
     record = SimpleNamespace(
-        result_json={"analysis_id": "aid-old"},
-        favorite=False,
-        notes="",
-        tags=[],
-        updated_at=None,
+        id=run_id,
+        result_json=dict(original_result),
     )
-
-    session_active = False
-    committed = False
 
     class FakeSession:
 
         async def __aenter__(self):
-            nonlocal session_active
-            if session_active:
-                raise AssertionError("history recovery must not nest database sessions")
-            session_active = True
             return self
 
         async def __aexit__(self, *args):
-            nonlocal session_active
-            session_active = False
             return None
 
-        async def get(self, _model, analysis_id):
-            return record if analysis_id == "aid-old" else None
-
-        async def commit(self):
-            nonlocal committed
-            committed = True
+        async def scalar(self, _statement):
+            return record
 
     async def no_schema():
         return None
 
-    async def recover(_analysis_id):
-        assert session_active is False, "history row session must close before transcript recovery"
+    async def recover(_run_id):
+        assert _run_id == run_id
         return {
             "stage1": {"reasoning": "先看结构。", "content": '{"gate_result":"wait"}'},
             "stage2": {"reasoning": "", "content": ""},
@@ -87,9 +43,7 @@ def test_opening_old_history_persists_recovered_llm_transcript(monkeypatch) -> N
     monkeypatch.setattr("app.analysis.history.service.SessionFactory", FakeSession)
     monkeypatch.setattr("app.analysis.history.service.get_analysis_llm_transcript", recover)
 
-    detail = anyio.run(get_analysis_history, "aid-old")
+    detail = anyio.run(get_analysis_history, run_id)
 
     assert detail["llm_transcript"]["stage1"]["reasoning"] == "先看结构。"
-    assert record.result_json["llm_transcript"] == detail["llm_transcript"]
-    assert record.updated_at is not None
-    assert committed is True
+    assert record.result_json == original_result, "结果 JSON 在读取后必须保持不可变"

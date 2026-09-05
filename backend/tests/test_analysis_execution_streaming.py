@@ -1,3 +1,5 @@
+import uuid
+
 import anyio
 
 from app.analysis.execution.manager import run_streamed_analysis
@@ -23,7 +25,10 @@ def test_saved_analysis_forwards_llm_deltas(monkeypatch) -> None:
     })]
     expected_result = object()
 
-    async def fake_stream(_provider, _query):
+    persisted_run_id = uuid.uuid4()
+
+    async def fake_stream(_provider, _query, *, run_id):
+        assert run_id == persisted_run_id
         yield {"type": "llm_delta", "stage": "stage1", "kind": "reasoning", "text": "先看结构。", "message": "思考中…"}
         yield {"type": "result", "stage": "complete", "message": "分析完成", "result": expected_result}
 
@@ -31,7 +36,7 @@ def test_saved_analysis_forwards_llm_deltas(monkeypatch) -> None:
     forwarded = []
 
     async def collect():
-        result = await run_streamed_analysis(bars, query, forwarded.append)
+        result = await run_streamed_analysis(bars, query, forwarded.append, persisted_run_id)
         assert result is expected_result
 
     anyio.run(collect)
