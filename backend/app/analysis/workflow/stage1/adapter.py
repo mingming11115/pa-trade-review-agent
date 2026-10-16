@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any, Awaitable, Callable
 
+from app.knowledge.contracts import PromptSnapshot
 from app.analysis.contracts import GateTraceItem, Stage1Result
 from app.analysis.execution.runs import persist_llm_response, update_analysis_run
 from app.llm.client import LLMResponse
@@ -12,7 +13,7 @@ from app.analysis.workflow.stage1.core.data.base import KlineBar, KlineFrame
 from app.analysis.workflow.stage1.core.bar_identity import BarRange
 from app.analysis.workflow.stage1.core.data.snapshot import build_analysis_frame
 from app.analysis.workflow.stage1.core.json_validator import JsonValidator, Ok, ValidationError
-from app.analysis.workflow.stage1.core.prompt_assembler import PromptAssembler
+from app.analysis.workflow.stage1.core.prompt_assembler import PromptAssembler, stage1_prompt_txt_files
 from app.analysis.workflow.stage1.core.retry_feedback import build_retry_feedback
 from app.analysis.workflow.stage1.core.compat import PROMPT_DIR
 
@@ -51,8 +52,9 @@ def build_original_stage1_messages(
     frame: KlineFrame,
     *,
     program_context: dict[str, Any] | None = None,
+    prompt_snapshot: PromptSnapshot | None = None,
 ) -> list[dict[str, str]]:
-    messages = PromptAssembler(PROMPT_DIR).build_stage1(frame, analysis_mode="original")
+    messages = PromptAssembler(PROMPT_DIR, prompt_contents=prompt_snapshot.contents if prompt_snapshot is not None else None).build_stage1(frame, analysis_mode="original")
     if not program_context:
         return messages
     context_block = (
@@ -121,10 +123,11 @@ async def execute_original_stage1(
     *,
     max_attempts: int = 2,
     analysis_context: dict[str, str] | None = None,
+    prompt_snapshot: PromptSnapshot | None = None,
 ) -> tuple[Stage1Result, bool]:
     if not base.precheck.passed:
         return base, False
-    messages = build_original_stage1_messages(frame)
+    messages = build_original_stage1_messages(frame, prompt_snapshot=prompt_snapshot)
     system_prompt = messages[0]["content"]
     user_prompt = messages[1]["content"]
     validator = JsonValidator()
@@ -147,6 +150,7 @@ async def execute_original_stage1(
             mode=context.get("mode", "historical"),
             symbol=context.get("symbol", frame.symbol),
             period=context.get("period", frame.timeframe),
+            prompt_metadata={"knowledge": prompt_snapshot.metadata(stage1_prompt_txt_files())} if prompt_snapshot is not None else None,
         )
         raw = response.raw_content or ""
         result = validator.validate("stage1", raw, kline_frame=frame)

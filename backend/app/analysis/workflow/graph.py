@@ -11,11 +11,14 @@ import asyncio
 import json
 import logging
 import uuid
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from datetime import timedelta
 from typing import Any, TypedDict
 
+from app.knowledge.contracts import PromptSnapshot
+from app.analysis.workflow.stage1.core.prompt_assembler import stage1_prompt_txt_files, stage2_prompt_txt_files
 from app.market.analysis import aggregate_bars, analyze_bars
 from app.analysis.contracts import (
     AnalysisAudit,
@@ -76,6 +79,7 @@ class DemoAnalysisState(TypedDict, total=False):
     total=False 表示所有字段均为可选（不同节点只写入自己负责的字段）。
     """
 
+    prompt_snapshot: PromptSnapshot | None
     query: HistoricalQuery  # 用户原始查询
     resolved_symbol: str  # 解析后的合约符号（含到期月）
     bars: list[Bar]  # 实际参与分析展示的 K 线
@@ -160,6 +164,7 @@ class DemoAnalysisWorkflow:
     provider: MassiveHistoricalProvider  # 行情数据提供者
     memory_store: AnalysisMemoryStore = DEFAULT_MEMORY_STORE  # 记忆存储
     run_id: uuid.UUID | None = None  # 由持久化 Run 调用方注入；临时分析则自动生成
+    prompt_snapshot: PromptSnapshot | None = None
     _compiled: Any = field(init=False, repr=False)  # 编译后的 LangGraph 图
     _stream_queue: asyncio.Queue[dict[str, Any] | None] | None = field(default=None, init=False, repr=False)  # 流式事件队列
     _stream_llm_stage: str | None = field(default=None, init=False, repr=False)  # 当前流式 LLM 阶段标识
@@ -208,7 +213,7 @@ class DemoAnalysisWorkflow:
     async def _ainvoke_with_trail(self, query: HistoricalQuery) -> DemoAnalysisState:
         """运行编译后的图，同时记录真实 LangGraph 节点执行顺序。"""
         assert self._compiled is not None
-        initial: DemoAnalysisState = {"query": query}
+        initial: DemoAnalysisState = {"query": query, "prompt_snapshot": self.prompt_snapshot}
         trail: list[str] = []  # 节点执行轨迹
         state: DemoAnalysisState | None = None
         # 使用 astream 同时获取 updates（节点更新）和 values（全量状态）
@@ -338,7 +343,7 @@ class DemoAnalysisWorkflow:
             return self._to_response(state)
 
         # LangGraph 不可用时的降级路径：按节点顺序手动执行
-        state: DemoAnalysisState = {"query": query, "graph_trail": []}
+        state: DemoAnalysisState = {"query": query, "graph_trail": [], "prompt_snapshot": self.prompt_snapshot}
         state.update(await self._prepare_context(state))
         self._append_trail(state, "prepare_context")
         if self._route_prepared_context(state) == "terminal":
@@ -393,12 +398,16 @@ class DemoAnalysisWorkflow:
                 if event is None:
                     break
                 yield event
-        finally:
+        except (asyncio.CancelledError, GeneratorExit):
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        else:
             await task
 
     async def _run_sequential(self, query: HistoricalQuery) -> DemoAnalysisState:
         """LangGraph 不可用时的流式降级路径，按同一组节点顺序手动执行。"""
-        state: DemoAnalysisState = {"query": query, "graph_trail": []}
+        state: DemoAnalysisState = {"query": query, "graph_trail": [], "prompt_snapshot": self.prompt_snapshot}
         await self._emit_stream_event({"type": "status", "stage": "prepare", "message": "正在恢复上一轮分析上下文"})
         state.update(await self._prepare_context(state))
         self._append_trail(state, "prepare_context")
@@ -791,8 +800,11 @@ class DemoAnalysisWorkflow:
         """执行唯一的 Stage1 LLM 请求，记录用量和原始响应，不承担解析或校验。"""
         attempt = int(state.get("stage1_attempt", 0)) + 1
         messages = build_original_stage1_messages(
-            state["stage1_frame"], program_context=state.get("stage1_program_context")
+            state["stage1_frame"], program_context=state.get("stage1_program_context"),
+            prompt_snapshot=state.get("prompt_snapshot")
         )
+        from app.replay.analysis import replay_prompt_context
+        messages[-1]["content"] += replay_prompt_context(state["query"])
         retry_text = state.get("stage1_retry_text", "")
         response = await self._call_llm_for_stage(
             "stage1",
@@ -820,6 +832,7 @@ class DemoAnalysisWorkflow:
             mode=state["query"].analysis_mode,
             symbol=state["query"].symbol,
             period=state["query"].period.value,
+            prompt_metadata={"knowledge": self.prompt_snapshot.metadata(stage1_prompt_txt_files())} if self.prompt_snapshot is not None else None,
         )
         return {
             "stage1_attempt": attempt,
@@ -993,6 +1006,7 @@ class DemoAnalysisWorkflow:
             stage1_frame,
             stage1_call,
             lambda result, label: self._record_usage(state, result, label),
+            prompt_snapshot=state.get("prompt_snapshot"),
             analysis_context={
                 "run_id": str(state["run_id"]),
                 "mode": state["query"].analysis_mode,
@@ -1012,7 +1026,7 @@ class DemoAnalysisWorkflow:
             state["query"].period.value,
             visible_count=len(state["bars"]),
         )
-        _, stage1_json, strategy_files = build_original_stage2_messages(frame, state["stage1"])
+        _, stage1_json, strategy_files = build_original_stage2_messages(frame, state["stage1"], prompt_snapshot=state.get("prompt_snapshot"))
         context = {
             "stage1": stage1_json,
             "strategy_files": strategy_files,
@@ -1056,7 +1070,8 @@ class DemoAnalysisWorkflow:
             "order_method": state["order_method_precheck"],
         }
         messages, stage1_json, strategy_files = build_original_stage2_messages(
-            state["stage2_frame"], state["stage1"], precheck_context=precheck_context
+            state["stage2_frame"], state["stage1"], precheck_context=precheck_context,
+            prompt_snapshot=state.get("prompt_snapshot")
         )
         run_id = await start_analysis_run(
             run_id=str(state["run_id"]),
@@ -1065,7 +1080,10 @@ class DemoAnalysisWorkflow:
             mode=state["query"].analysis_mode,
             symbol=state["query"].symbol,
             period=state["query"].period.value,
+            prompt_metadata={"knowledge": self.prompt_snapshot.metadata(stage2_prompt_txt_files(strategy_files, direction=state["stage1"].direction.value if state["stage1"].direction else ""))} if self.prompt_snapshot is not None else None,
         )
+        from app.replay.analysis import replay_prompt_context
+        messages[-1]["content"] += replay_prompt_context(state["query"])
         retry_text = state.get("stage2_retry_text", "")
         try:
             response = await self._call_llm_for_stage(
@@ -1595,9 +1613,10 @@ async def run_demo_analysis_workflow(
     memory_store: AnalysisMemoryStore = DEFAULT_MEMORY_STORE,
     *,
     run_id: uuid.UUID | None = None,
+    prompt_snapshot: PromptSnapshot | None = None,
 ) -> DemoAnalysisResponse:
     """创建并同步执行工作流，返回最终分析响应。"""
-    workflow = DemoAnalysisWorkflow(provider=provider, memory_store=memory_store, run_id=run_id)
+    workflow = DemoAnalysisWorkflow(provider=provider, memory_store=memory_store, run_id=run_id, prompt_snapshot=prompt_snapshot)
     return await workflow.invoke(query)
 
 
@@ -1607,17 +1626,21 @@ async def stream_demo_analysis_workflow(
     memory_store: AnalysisMemoryStore = DEFAULT_MEMORY_STORE,
     *,
     run_id: uuid.UUID | None = None,
+    prompt_snapshot: PromptSnapshot | None = None,
 ):
     """创建并流式执行工作流，逐个 yield 进度/推理/结果事件。"""
-    workflow = DemoAnalysisWorkflow(provider=provider, memory_store=memory_store, run_id=run_id)
-    async for event in workflow.stream(query):
-        yield event
+    workflow = DemoAnalysisWorkflow(provider=provider, memory_store=memory_store, run_id=run_id, prompt_snapshot=prompt_snapshot)
+    async with aclosing(workflow.stream(query)) as events:
+        async for event in events:
+            yield event
 
 
 async def build_stage1_debug_preview(
     provider: MassiveHistoricalProvider,
     query: HistoricalQuery,
     memory_store: AnalysisMemoryStore = DEFAULT_MEMORY_STORE,
+    *,
+    prompt_snapshot: PromptSnapshot | None = None,
 ) -> DebugPreview:
     """构建 Stage1 调试预览，展示 LLM 输入和预计 token 数量，供调试确认。"""
     resolved_symbol = resolve_contract_symbol(query.symbol, query.start, query.end)
@@ -1656,7 +1679,7 @@ async def build_stage1_debug_preview(
         query.period.value,
         visible_count=len(bars),
     )
-    messages = build_original_stage1_messages(frame)
+    messages = build_original_stage1_messages(frame, prompt_snapshot=prompt_snapshot)
     llm_input = {"stage": "stage1", "messages": messages}
     serialized = json.dumps(llm_input, ensure_ascii=False, separators=(",", ":"))
     settings = get_public_settings()

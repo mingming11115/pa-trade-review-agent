@@ -17,3 +17,12 @@ test: backend-test frontend-test
 build:
 	cd frontend && npm run build
 
+
+market-worker:
+	cd backend && ../.venv/bin/python -m app.market.worker
+
+market-collect-once:
+	cd backend && ../.venv/bin/python -m app.market.worker --once
+
+market-migrate:
+	cd backend && ../.venv/bin/python -m app.market.migrate_archive

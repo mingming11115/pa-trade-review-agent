@@ -1,8 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   CandlestickSeries,
-  HistogramSeries,
-  LineSeries,
   ColorType,
   CrosshairMode,
   createChart,
@@ -26,8 +24,15 @@ import {
   formatBarCountdown,
   remainingToBucketCloseMs,
 } from "./feed";
+import { useChartReplay, type ReplayLoader } from "./useChartReplay";
 import { computePaio } from "./paio";
 import { buildBarLookup, PaioPrimitive, type PaioVisibility } from "./PaioPrimitive";
+import { createChartOverlayContext, type ChartOverlayContext } from "./chartOverlay";
+import { ReplayBarPicker } from "./ReplayBarPicker";
+import { IndicatorPanel, IndicatorSettingsDialog } from "./IndicatorPanel";
+import { IndicatorLegend } from "./IndicatorLegend";
+import { loadIndicatorSettings, saveIndicatorSettings, type IndicatorKey } from "./indicatorSettings";
+import { createChartIndicators } from "./chartIndicators";
 import type { Bar, Period, Stage1Result, Stage2Result, TradeMarker } from "./types";
 
 function useBarCloseCountdown(period: Period | "" | undefined, enabled: boolean): string | null {
@@ -63,26 +68,6 @@ function lastBarAnchor(
   return { x: x + 14, y: y - 10 };
 }
 
-function computeEma(bars: Bar[], period: number): Array<{ time: UTCTimestamp; value: number }> {
-  if (bars.length < period) return [];
-  const multiplier = 2 / (period + 1);
-  let sum = 0;
-  for (let i = 0; i < period; i += 1) sum += bars[i].close;
-  let ema = sum / period;
-  const points: Array<{ time: UTCTimestamp; value: number }> = [{
-    time: Math.floor(new Date(bars[period - 1].timestamp).getTime() / 1000) as UTCTimestamp,
-    value: ema,
-  }];
-  for (let i = period; i < bars.length; i += 1) {
-    ema = bars[i].close * multiplier + ema * (1 - multiplier);
-    points.push({
-      time: Math.floor(new Date(bars[i].timestamp).getTime() / 1000) as UTCTimestamp,
-      value: ema,
-    });
-  }
-  return points;
-}
-
 function resetRange(chart: IChartApi, barCount: number, locked: boolean) {
   if (locked) {
     chart.timeScale().fitContent();
@@ -106,14 +91,6 @@ function toCandle(bar: Bar) {
     high: bar.high,
     low: bar.low,
     close: bar.close,
-  };
-}
-
-function toVolume(bar: Bar) {
-  return {
-    time: Math.floor(new Date(bar.timestamp).getTime() / 1000) as UTCTimestamp,
-    value: bar.volume ?? 0,
-    color: bar.close >= bar.open ? "rgba(8,153,129,.28)" : "rgba(242,54,69,.25)",
   };
 }
 
@@ -151,21 +128,15 @@ function barsAfterTip(bars: Bar[], tipTs: string): Bar[] {
 
 function applySeriesData(
   series: ISeriesApi<"Candlestick">,
-  volumeSeries: ISeriesApi<"Histogram">,
-  ema20Series: ISeriesApi<"Line">,
   paio: PaioPrimitive,
   nextBars: Bar[],
-  showEma: boolean,
   analysisBars?: Bar[],
 ) {
   series.setData(nextBars.map(toCandle));
-  volumeSeries.setData(nextBars.filter((bar) => bar.volume != null).map(toVolume));
-  ema20Series.setData(showEma ? computeEma(nextBars, 20) : []);
   paio.setModel(computePaio(nextBars, { analysisBars }), buildBarLookup(nextBars));
 }
 
 const DEFAULT_OVERLAYS = {
-  ema20: true,
   gaps: true,
   barIndex: true,
   hl: true,
@@ -186,6 +157,14 @@ export function TradingChart({
   onRangeSelected,
   onNeedHistory,
   onNeedFuture,
+  onReplayLoad,
+  onStartTradingReplay,
+  replaySetup,
+  replayStartDisabled=false,
+  replayStarting=false,
+  replayStartingSeconds=0,
+  onCancelTradingReplay,
+  renderOverlay,
 }: {
   bars: Bar[];
   /** Identity for full setData; live merges keep the same key. */
@@ -203,13 +182,47 @@ export function TradingChart({
   onNeedHistory?: (start: string, end: string) => void | Promise<void>;
   /** Load bars after the analysis tip so「下一根」can continue. */
   onNeedFuture?: (start: string, end: string) => void | Promise<void>;
+  onReplayLoad?: ReplayLoader;
+  onStartTradingReplay?: (start?:string)=>void;
+  replaySetup?: ReactNode;
+  replayStartDisabled?: boolean;
+  replayStarting?:boolean;
+  replayStartingSeconds?:number;
+  onCancelTradingReplay?:()=>void;
   onPeriodChange?: (period: Period) => void;
+  renderOverlay?: (context: ChartOverlayContext) => ReactNode;
 }) {
+  const [inputTimezone, setInputTimezone] = useState(timezoneOffsetMinutes);
+  const replay = useChartReplay(chartKey, period, inputTimezone, onReplayLoad);
+  const [replayOpen, setReplayOpen] = useState(false);
+  const [replayDate, setReplayDate] = useState("");
+  const [replayNow, setReplayNow] = useState(Date.now);
+  const replayMax = new Date(replayNow + inputTimezone * 60000).toISOString().slice(0, 16);
+  const replayTime = Date.parse(`${replayDate}Z`) - inputTimezone * 60000;
+  const replayDateInvalid = !Number.isFinite(replayTime) || replayTime > replayNow;
+  useEffect(() => {
+    if (!replayOpen) return;
+    setReplayNow(Date.now());
+    const timer = window.setInterval(() => setReplayNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [replayOpen]);
+  const replayActive = replay.bars !== null;
+  const displayKey = `${chartKey}:${replayActive ? "replay" : "normal"}`;
+  const barPickerIdentity = `${displayKey}:${period ?? ''}`;
+  const [barPickerKey, setBarPickerKey] = useState<string | null>(null);
+  const selectingBar = replayOpen && !replay.busy && !replayStarting && barPickerKey === barPickerIdentity;
+  useEffect(() => { setBarPickerKey(null); }, [barPickerIdentity, replayOpen, replay.busy, replayStarting]);
+  useEffect(() => { setReplayOpen(false); }, [chartKey]);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const overlayBridgeRef = useRef<ReturnType<typeof createChartOverlayContext> | null>(null);
+  const [overlayContext, setOverlayContext] = useState<ChartOverlayContext | null>(null);
+  const hasOverlay = Boolean(renderOverlay) || selectingBar;
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
-  const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const emaRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const indicatorsRef = useRef<ReturnType<typeof createChartIndicators> | null>(null);
+  const [indicatorChart, setIndicatorChart] = useState<IChartApi | null>(null);
+  const [indicatorSettingsKey, setIndicatorSettingsKey] = useState<IndicatorKey | null>(null);
+  const [indicators, setIndicators] = useState(loadIndicatorSettings);
   const paioRef = useRef<PaioPrimitive | null>(null);
   const markersApiRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
@@ -227,7 +240,7 @@ export function TradingChart({
   const [countdownAnchor, setCountdownAnchor] = useState<{ x: number; y: number } | null>(null);
 
   const analysisBarsRef = useRef(analysisBars);
-  analysisBarsRef.current = analysisBars;
+  analysisBarsRef.current = replayActive ? undefined : analysisBars;
   allBarsRef.current = bars;
   forwardExtraRef.current = forwardExtra;
 
@@ -242,14 +255,15 @@ export function TradingChart({
   afterBarsRef.current = afterBars;
 
   const visibleBars = useMemo(() => {
+    if (replay.bars) return replay.bars;
     if (!analysisBars?.length) return bars;
     return [...analysisBars, ...afterBars.slice(0, forwardExtra)];
-  }, [analysisBars, afterBars, bars, forwardExtra]);
+  }, [analysisBars, afterBars, bars, forwardExtra, replay.bars]);
 
   const markerSeriesData = useMemo(() => {
     const tip = visibleBars[visibleBars.length - 1]?.timestamp;
     const filtered = tip
-      ? markers.filter((marker) => marker.timestamp <= tip)
+      ? markers.filter((marker) => Date.parse(marker.timestamp) <= Date.parse(tip))
       : markers;
     return filtered.map(toMarkerShape);
   }, [markers, visibleBars]);
@@ -261,8 +275,8 @@ export function TradingChart({
       autoSize: true,
       height: 460,
       layout: {
-        background: { type: ColorType.Solid, color: "#fbfcfd" },
-        textColor: "#777b84",
+        background: { type: ColorType.Solid, color: "#ffffff" },
+        textColor: "#8290a2",
         fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif',
         attributionLogo: false,
       },
@@ -271,8 +285,8 @@ export function TradingChart({
         timeFormatter: (time: Time) => timezoneFormat(time, timezoneOffsetMinutes, "full"),
       },
       grid: {
-        vertLines: { color: "#eef1f4" },
-        horzLines: { color: "#eef1f4" },
+        vertLines: { color: "#edf1f6" },
+        horzLines: { color: "#edf1f6" },
       },
       crosshair: { mode: CrosshairMode.Normal },
       rightPriceScale: {
@@ -312,36 +326,23 @@ export function TradingChart({
       wickDownColor: "#f23645",
       priceLineVisible: true,
     });
-    const volumeSeries = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: "volume" },
-      priceScaleId: "volume",
-      lastValueVisible: false,
-      priceLineVisible: false,
-    });
-    chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    const ema20Series = chart.addSeries(LineSeries, {
-      color: "#f59e0b",
-      lineWidth: 2,
-      priceLineVisible: false,
-      lastValueVisible: true,
-      crosshairMarkerVisible: true,
-      title: "EMA20",
-    });
     const paio = new PaioPrimitive();
     series.attachPrimitive(paio);
 
     chartRef.current = chart;
     candleRef.current = series;
-    volumeRef.current = volumeSeries;
-    emaRef.current = ema20Series;
+    indicatorsRef.current = createChartIndicators(chart);
+    setIndicatorChart(chart);
     paioRef.current = paio;
     markersApiRef.current = createSeriesMarkers(series, []);
 
     return () => {
+      // This effect cleans up before the optional overlay effect below.
+      overlayBridgeRef.current?.dispose();
+      overlayBridgeRef.current = null;
       markersApiRef.current = null;
       candleRef.current = null;
-      volumeRef.current = null;
-      emaRef.current = null;
+      indicatorsRef.current = null;
       paioRef.current = null;
       chartRef.current = null;
       prevKeyRef.current = "";
@@ -350,6 +351,21 @@ export function TradingChart({
       chart.remove();
     };
   }, []);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = candleRef.current;
+    const container = containerRef.current;
+    if (!hasOverlay || !chart || !series || !container) return;
+    const bridge = createChartOverlayContext({ chart, series, container });
+    overlayBridgeRef.current = bridge;
+    setOverlayContext(bridge.context);
+    return () => {
+      bridge.dispose();
+      if (overlayBridgeRef.current === bridge) overlayBridgeRef.current = null;
+      setOverlayContext(null);
+    };
+  }, [hasOverlay]);
 
   useEffect(() => {
     chartRef.current?.applyOptions({
@@ -394,28 +410,24 @@ export function TradingChart({
   useEffect(() => {
     const chart = chartRef.current;
     const series = candleRef.current;
-    const volumeSeries = volumeRef.current;
-    const ema20Series = emaRef.current;
     const paio = paioRef.current;
-    if (!chart || !series || !volumeSeries || !ema20Series || !paio) return;
+    if (!chart || !series || !paio) return;
 
     if (visibleBars.length === 0) {
       series.setData([]);
-      volumeSeries.setData([]);
-      ema20Series.setData([]);
       paio.setModel(computePaio([]), buildBarLookup([]));
       prevVisibleRef.current = [];
-      prevKeyRef.current = chartKey;
+      prevKeyRef.current = displayKey;
       return;
     }
 
     const pinned = analysisBarsRef.current;
     const applyFull = (fit: boolean) => {
-      applySeriesData(series, volumeSeries, ema20Series, paio, visibleBars, overlays.ema20, pinned);
+      applySeriesData(series, paio, visibleBars, pinned);
       if (fit) resetRange(chart, visibleBars.length, locked);
     };
 
-    const identityChanged = prevKeyRef.current !== chartKey;
+    const identityChanged = prevKeyRef.current !== displayKey;
     const prev = prevVisibleRef.current;
 
     if (identityChanged || prev.length === 0) {
@@ -423,7 +435,7 @@ export function TradingChart({
     } else if (isBarPrepend(prev, visibleBars)) {
       applyFull(false);
     } else if (visibleBars.length < prev.length || !samePrefix(prev, visibleBars)) {
-      applyFull(false);
+      applyFull(replayActive);
     } else if (visibleBars.length === prev.length) {
       const last = visibleBars[visibleBars.length - 1];
       const prevLast = prev[prev.length - 1];
@@ -436,15 +448,11 @@ export function TradingChart({
         || last.volume !== prevLast.volume
       ) {
         series.update(toCandle(last));
-        if (last.volume != null) volumeSeries.update(toVolume(last));
-        ema20Series.setData(overlays.ema20 ? computeEma(visibleBars, 20) : []);
         paio.setModel(computePaio(visibleBars, { analysisBars: pinned }), buildBarLookup(visibleBars));
       }
     } else if (visibleBars.length === prev.length + 1) {
       const last = visibleBars[visibleBars.length - 1];
       series.update(toCandle(last));
-      if (last.volume != null) volumeSeries.update(toVolume(last));
-      ema20Series.setData(overlays.ema20 ? computeEma(visibleBars, 20) : []);
       paio.setModel(computePaio(visibleBars, { analysisBars: pinned }), buildBarLookup(visibleBars));
       const range = chart.timeScale().getVisibleLogicalRange();
       if (range && range.to < visibleBars.length - 1) {
@@ -458,9 +466,9 @@ export function TradingChart({
       applyFull(false);
     }
 
-    prevKeyRef.current = chartKey;
+    prevKeyRef.current = displayKey;
     prevVisibleRef.current = visibleBars;
-  }, [visibleBars, chartKey, locked, overlays.ema20, analysisBars]);
+  }, [visibleBars, displayKey, locked, analysisBars]);
 
   useEffect(() => {
     const visibility: PaioVisibility = {
@@ -471,12 +479,7 @@ export function TradingChart({
     paioRef.current?.setVisibility(visibility);
   }, [overlays.gaps, overlays.barIndex, overlays.hl]);
 
-  useEffect(() => {
-    const ema20Series = emaRef.current;
-    if (!ema20Series) return;
-    ema20Series.setData(overlays.ema20 ? computeEma(visibleBars, 20) : []);
-    ema20Series.applyOptions({ visible: overlays.ema20 });
-  }, [overlays.ema20, visibleBars]);
+  useEffect(() => { saveIndicatorSettings(indicators); }, [indicators]);
 
   useEffect(() => {
     const series = candleRef.current;
@@ -497,7 +500,7 @@ export function TradingChart({
     };
 
     // S/R belong to the analysis snapshot tip — hide once replay steps past it.
-    if (forwardExtra === 0) {
+    if (!replayActive && forwardExtra === 0) {
       stage1?.support_levels.forEach((price) => addLine(price, "#12846d", "支撑", 1, 2));
       stage1?.resistance_levels.forEach((price) => addLine(price, "#d94f5d", "阻力", 1, 2));
     }
@@ -508,16 +511,16 @@ export function TradingChart({
       [stage2?.decision.take_profit_price_2 ?? null, "#059669", "目标 2"],
     ];
     decisionLines.forEach(([price, color, title]) => {
-      if (price != null) addLine(price, color, title, 2, 0);
+      if (!replayActive && price != null) addLine(price, color, title, 2, 0);
     });
 
     markersApiRef.current?.setMarkers(markerSeriesData);
-  }, [markerSeriesData, stage1, stage2, forwardExtra]);
+  }, [markerSeriesData, stage1, stage2, forwardExtra, replayActive]);
 
   useEffect(() => {
     const chart = chartRef.current;
     const series = candleRef.current;
-    if (!chart || !series || !onNeedHistory || !period) return;
+    if (!chart || !series || !onNeedHistory || !period || replayActive) return;
 
     historyRequestedBeforeRef.current = null;
     let timer = 0;
@@ -554,7 +557,7 @@ export function TradingChart({
       window.clearTimeout(timer);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange);
     };
-  }, [onNeedHistory, period, chartKey]);
+  }, [onNeedHistory, period, chartKey, replayActive]);
 
   async function requestFutureChunk() {
     if (!onNeedFuture || !period || !analysisTip || futureInflightRef.current) return;
@@ -587,11 +590,6 @@ export function TradingChart({
     }, 120);
   }
 
-  function stepBack() {
-    pendingForwardRef.current = null;
-    setForwardExtra((current) => Math.max(0, current - 1));
-  }
-
   function zoom(factor: number) {
     const chart = chartRef.current;
     const range = chart?.timeScale().getVisibleLogicalRange();
@@ -606,7 +604,7 @@ export function TradingChart({
 
   function selectVisibleRange() {
     if (!onRangeSelected) return;
-    if (analysisBars?.length && visibleBars.length) {
+    if ((replayActive || analysisBars?.length) && visibleBars.length) {
       onRangeSelected(visibleBars[0].timestamp, visibleBars[visibleBars.length - 1].timestamp);
       return;
     }
@@ -620,8 +618,8 @@ export function TradingChart({
     setOverlays((current) => ({ ...current, [key]: !current[key] }));
   }
 
-  const showForwardControls = Boolean(locked && analysisBars?.length);
-  const closeCountdown = useBarCloseCountdown(period, !locked && Boolean(period));
+  const showForwardControls = Boolean(!replayActive && locked && analysisBars?.length);
+  const closeCountdown = useBarCloseCountdown(period, !replayActive && !locked && Boolean(period));
 
   useEffect(() => {
     if (closeCountdown == null) {
@@ -645,29 +643,32 @@ export function TradingChart({
   return (
     <div className="trading-chart-shell">
       <div className="chart-toolbar">
-        <div className="chart-overlay-toggles" role="group" aria-label="图表叠加层">
-          <label className={overlays.ema20 ? "is-on" : undefined}>
-            <input checked={overlays.ema20} onChange={() => toggleOverlay("ema20")} type="checkbox" />
-            <span className="chart-legend-ema">EMA20</span>
-          </label>
-          <label className={overlays.gaps ? "is-on" : undefined}>
-            <input checked={overlays.gaps} onChange={() => toggleOverlay("gaps")} type="checkbox" />
-            <span>Gap</span>
-          </label>
-          <label className={overlays.barIndex ? "is-on" : undefined}>
-            <input checked={overlays.barIndex} onChange={() => toggleOverlay("barIndex")} type="checkbox" />
-            <span>K#</span>
-          </label>
-          <label className={overlays.hl ? "is-on" : undefined}>
-            <input checked={overlays.hl} onChange={() => toggleOverlay("hl")} type="checkbox" />
-            <span>H/L</span>
-          </label>
-          {locked && <span className="chart-toolbar-hint">锁定区间</span>}
-        </div>
+        {locked && !replayActive && <span className="chart-toolbar-hint">锁定区间</span>}
         <div className="chart-toolbar-actions">
+          <IndicatorPanel settings={indicators} onChange={setIndicators} displayControls={<>
+              <label className={indicators.ema.enabled && indicators.ema.visible ? "is-on" : undefined}>
+                <input checked={indicators.ema.enabled && indicators.ema.visible} onChange={() => setIndicators(current => ({ ...current, ema: { ...current.ema, enabled: true, visible: !current.ema.enabled || !current.ema.visible } }))} type="checkbox" />
+                <span style={{ color: indicators.ema.color }}>EMA{indicators.ema.period}</span>
+              </label>
+              <label className={overlays.gaps ? "is-on" : undefined}>
+                <input checked={overlays.gaps} onChange={() => toggleOverlay("gaps")} type="checkbox" />
+                <span>Gap</span>
+              </label>
+              <label className={overlays.barIndex ? "is-on" : undefined}>
+                <input checked={overlays.barIndex} onChange={() => toggleOverlay("barIndex")} type="checkbox" />
+                <span>K#</span>
+              </label>
+              <label className={overlays.hl ? "is-on" : undefined}>
+                <input checked={overlays.hl} onChange={() => toggleOverlay("hl")} type="checkbox" />
+                <span>H/L</span>
+              </label>
+          </>} />
+          {(onReplayLoad||onStartTradingReplay) && <button type="button" disabled={replay.busy} aria-expanded={replayOpen} onClick={() => {
+            setReplayOpen(replayActive || !replayOpen);
+            if (!replayDate && visibleBars.length) setReplayDate(new Date(Date.parse(visibleBars[visibleBars.length - 1].timestamp) + inputTimezone * 60000).toISOString().slice(0, 16));
+          }}>回放</button>}
           {showForwardControls && (
             <div className="chart-replay" role="group" aria-label="分析后逐根查看">
-              <button aria-label="上一根" disabled={forwardExtra <= 0} onClick={stepBack} type="button">上一根</button>
               <button aria-label="下一根" onClick={() => { void stepForward(); }} type="button">下一根</button>
             </div>
           )}
@@ -679,8 +680,65 @@ export function TradingChart({
           {onRangeSelected && <button onClick={selectVisibleRange} type="button">使用可视区间</button>}
         </div>
       </div>
-      <div className="trading-chart-stage">
+      {replayOpen && <div className="chart-replay-panel" role="group" aria-label="K 线回放">
+        <button type="button" disabled={replay.busy || replayStarting || visibleBars.length === 0} aria-pressed={selectingBar} onClick={() => {
+          replay.setPlaying(false);
+          setBarPickerKey(selectingBar ? null : barPickerIdentity);
+        }}>{selectingBar ? '取消选择' : '选择 K 线'}</button>
+        <label>开始时间 <input aria-label="回放开始时间" type="datetime-local" max={replayMax} value={replayDate} onChange={event => setReplayDate(event.target.value)} /></label>
+        <label>输入时区 <select aria-label="回放输入时区" disabled={replay.busy} value={inputTimezone} onChange={event => {
+          const nextOffset = Number(event.target.value);
+          const parsed = Date.parse(`${replayDate}Z`);
+          if (Number.isFinite(parsed)) setReplayDate(new Date(parsed + (nextOffset - inputTimezone) * 60000).toISOString().slice(0, 16));
+          setInputTimezone(nextOffset);
+        }}>
+          <option value={timezoneOffsetMinutes}>图表时间 UTC{timezoneOffsetMinutes >= 0 ? "+" : ""}{timezoneOffsetMinutes / 60}</option>
+          {timezoneOffsetMinutes !== 480 && <option value={480}>北京时间 UTC+8</option>}
+        </select></label>
+        {replaySetup}
+        <button className={replaySetup ? "primary-action replay-start-action" : undefined} type="button" disabled={replay.busy || replayStarting || replayStartDisabled || replayDateInvalid} onClick={() => { setBarPickerKey(null); if(onStartTradingReplay)onStartTradingReplay(new Date(replayTime).toISOString());else void replay.start(replayDate); }}>{replaySetup ? "开始回放" : "从此处回放"}</button>
+        <button type="button" disabled={replay.busy||replayStarting||replayStartDisabled} title={onStartTradingReplay ? "从当前品种已存的本地行情中随机选择回放起点" : "从 2023 年 1 月 1 日至今随机选择当前品种的回放起点"} onClick={() => {
+          setBarPickerKey(null);
+          if(onStartTradingReplay){onStartTradingReplay();return;}
+          void replay.startRandom().then(time => {
+            if (time !== undefined) setReplayDate(new Date(time + inputTimezone * 60000).toISOString().slice(0, 16));
+          });
+        }}>随机回放</button>
+        {replayActive && <>
+          <button type="button" disabled={replay.busy} onClick={() => { replay.setPlaying(false); void replay.next(); }}>下一根</button>
+          <button type="button" disabled={replay.busy && !replay.playing} onClick={() => replay.setPlaying(!replay.playing)}>{replay.playing ? "暂停" : "播放"}</button>
+          <span>回放至 {timezoneFormat(Math.floor(Date.parse(visibleBars[visibleBars.length - 1].timestamp) / 1000) as UTCTimestamp, timezoneOffsetMinutes, "full")}</span>
+        </>}
+        <button type="button" onClick={() => { if(replayStarting)onCancelTradingReplay?.();else replay.exit(); setReplayOpen(false); }}>{replayStarting?'取消创建':replaySetup?'取消':'退出回放'}</button>
+        {replayStarting && <span role="status">正在创建回放… {replayStartingSeconds} 秒 · 正在准备历史行情，可取消等待</span>}
+        {replay.busy && <span role="status">正在加载行情… {replay.elapsedSeconds} 秒{replay.elapsedSeconds >= 10 ? " · 历史数据补充中，可退出取消" : ""}</span>}
+        {replay.error && <span role="alert">{replay.error}</span>}
+      </div>}
+      <div className="trading-chart-stage" style={{ height: `calc(var(--chart-base-height, 460px) + ${140 * (Number(indicators.macd.enabled) + Number(indicators.rsi.enabled))}px)` }}>
         <div className="trading-chart" ref={containerRef} />
+        {indicatorChart && indicatorsRef.current && containerRef.current && <IndicatorLegend
+          chart={indicatorChart} renderer={indicatorsRef.current} container={containerRef.current}
+          bars={visibleBars} settings={indicators} period={period} identity={displayKey}
+          onChange={setIndicators} onSettings={setIndicatorSettingsKey}
+        />}
+        {overlayContext && renderOverlay?.(overlayContext)}
+        {overlayContext && selectingBar && <ReplayBarPicker
+          context={overlayContext}
+          confirmStart={Boolean(replaySetup)}
+          bars={visibleBars}
+          timezoneOffsetMinutes={timezoneOffsetMinutes}
+          onCancel={() => setBarPickerKey(null)}
+          onSelect={timestamp => {
+            if (replay.busy || replayStarting) return;
+            setBarPickerKey(null);
+            const time = Date.parse(timestamp);
+            const local = new Date(time + inputTimezone * 60000).toISOString().slice(0, 16);
+            setReplayDate(local);
+            if (replaySetup) return;
+            if (onStartTradingReplay) onStartTradingReplay(new Date(time).toISOString());
+            else void replay.start(local);
+          }}
+        />}
         {closeCountdown != null && countdownAnchor && (
           <div
             aria-live="polite"
@@ -692,6 +750,7 @@ export function TradingChart({
           </div>
         )}
       </div>
+      {indicatorSettingsKey && <IndicatorSettingsDialog key={indicatorSettingsKey} indicator={indicatorSettingsKey} settings={indicators} onChange={setIndicators} onClose={() => setIndicatorSettingsKey(null)} />}
     </div>
   );
 }

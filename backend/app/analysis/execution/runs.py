@@ -170,6 +170,7 @@ async def persist_llm_response(
     mode: str,
     symbol: str,
     period: str,
+    prompt_metadata: dict[str, Any] | None = None,
 ) -> uuid.UUID | None:
     """将 LLM 响应写入内存 stage_runs。"""
     record = new_stage_run(
@@ -188,6 +189,7 @@ async def persist_llm_response(
         raw_content=response.raw_content,
         reasoning_content=response.reasoning_content,
         raw_response=response.raw_response,
+        prompt_metadata=prompt_metadata,
     )
     return uuid.UUID(str(record["id"]))
 
@@ -200,6 +202,7 @@ async def start_analysis_run(
     mode: str,
     symbol: str,
     period: str,
+    prompt_metadata: dict[str, Any] | None = None,
     provider: str = "",
     model: str = "",
 ) -> uuid.UUID | None:
@@ -209,6 +212,7 @@ async def start_analysis_run(
         stage=stage,
         attempt=attempt,
         status="request_started",
+        prompt_metadata=prompt_metadata,
         provider=provider,
         model=model,
     )

@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 load_dotenv(ROOT_DIR / ".env")
-KLINE_SYMBOLS = ("ES", "NQ")
+KLINE_SYMBOLS = ("ES", "NQ", "MES", "MNQ", "MGC")
 
 
 def _as_bool(value: str | None) -> bool:
@@ -28,6 +28,8 @@ class Settings:
     hist_max_retries: int
     frontend_origin: str
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/pa"
+    collector_mode: str = "embedded"
+    collector_interval_seconds: int = 60
     collector_enabled: bool = True
     collector_symbols: tuple[str, ...] = KLINE_SYMBOLS
     collector_lookback_minutes: int = 30
@@ -82,10 +84,12 @@ def get_settings() -> Settings:
             "postgresql+asyncpg://postgres:postgres@localhost:5432/pa",
         ),
         # 默认开启分钟采集；本地/生产都持续回补已收盘 1m。设 COLLECTOR_ENABLED=false 可关。
+        collector_mode=os.getenv("COLLECTOR_MODE", "embedded").strip().lower(),
+        collector_interval_seconds=max(60,int(os.getenv("COLLECTOR_INTERVAL_SECONDS", "60"))),
         collector_enabled=_as_bool(os.getenv("COLLECTOR_ENABLED", "true")),
         collector_symbols=tuple(
             symbol
-            for item in os.getenv("COLLECTOR_SYMBOLS", "ES,NQ").split(",")
+            for item in os.getenv("COLLECTOR_SYMBOLS", "ES,NQ,MES,MNQ,MGC").split(",")
             if (symbol := item.strip().upper()) in KLINE_SYMBOLS
         ),
         collector_lookback_minutes=max(2, int(os.getenv("COLLECTOR_LOOKBACK_MINUTES", "30"))),

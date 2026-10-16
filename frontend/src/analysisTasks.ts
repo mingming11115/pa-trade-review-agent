@@ -35,10 +35,10 @@ export function sidebarTaskFromApi(task: AnalysisTask): SidebarTaskData {
   // Analysis tasks created by the realtime-task UI persist only symbol/period.
   // Treat an absent mode as realtime; only an explicit historical mode belongs
   // in the range workbench.
-  const analysisMode: "range" | "live" = !review && config.analysis_mode !== "historical" ? "live" : "range";
+  const analysisMode: "range" | "live" = !review && task.kind !== "replay_review" && config.analysis_mode !== "historical" ? "live" : "range";
   return {
     id: task.id,
-    type: task.kind,
+    type: task.kind === "replay_review" ? "analysis" : task.kind,
     title: task.title,
     description: task.description,
     createdAt: task.created_at,
@@ -46,7 +46,7 @@ export function sidebarTaskFromApi(task: AnalysisTask): SidebarTaskData {
     status: task.status,
     version: task.version,
     config: {
-      type: task.kind,
+      type: task.kind === "replay_review" ? "analysis" : task.kind,
       title: task.title,
       description: task.description,
       symbol,

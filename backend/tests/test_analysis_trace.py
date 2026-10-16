@@ -110,3 +110,22 @@ def test_cancelled_run_keeps_trace_context_until_terminal_updates(monkeypatch) -
     assert [name for name, _ in repository.observed] == ["failed"]
     assert all(fields["trace_id"] == "cancel-trace" for _, fields in repository.observed)
     assert get_trace_id() == "-"
+
+
+def test_background_run_uses_persisted_owner_and_restores_context(monkeypatch) -> None:
+    from app.core.user_context import get_current_user_id, reset_current_user_id, set_current_user_id
+    run_id = uuid.uuid4()
+    repository = FailingRunRepository(run_id)
+    repository.run.user_id = uuid.uuid4()
+    observed = []
+    async def mark_running(_run_id):
+        observed.append(get_current_user_id())
+    monkeypatch.setattr(repository, 'mark_run_running', mark_running)
+    prior = uuid.uuid4()
+    token = set_current_user_id(prior)
+    try:
+        anyio.run(AnalysisRunManager(repository).run, run_id, 'owner-trace')
+        assert observed == [repository.run.user_id]
+        assert get_current_user_id() == prior
+    finally:
+        reset_current_user_id(token)

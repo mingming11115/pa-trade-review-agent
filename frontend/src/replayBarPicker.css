@@ -1,0 +1,38 @@
+.replay-bar-picker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 8;
+  cursor: crosshair;
+  touch-action: none;
+  overflow: hidden;
+}
+.replay-bar-picker-future {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, .72);
+  pointer-events: none;
+}
+.replay-bar-picker-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #3267ff;
+  pointer-events: none;
+}
+.replay-bar-picker-hint {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  max-width: calc(100% - 24px);
+  padding: 7px 10px;
+  border-radius: 5px;
+  color: #fff;
+  background: #3267ff;
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+}

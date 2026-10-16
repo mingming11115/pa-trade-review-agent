@@ -97,3 +97,21 @@ def test_lifespan_isolates_realtime_task_failure(monkeypatch):
     asyncio.run(exercise())
 
     assert events == ["api-alive", "realtime-stopped"]
+
+
+def test_external_worker_mode_does_not_start_backend_collectors(monkeypatch):
+    events=[]
+    class Collector:
+        def __init__(self,*args):pass
+        async def run_forever(self):events.append('unexpected-loop')
+        def stop(self):events.append('unexpected-stop')
+    async def no_op(*args):pass
+    monkeypatch.setattr(main_module,'ensure_schema',no_op)
+    monkeypatch.setattr(main_module,'bootstrap_admin',no_op)
+    monkeypatch.setattr(main_module,'MinuteCollector',Collector)
+    monkeypatch.setattr(main_module,'RealtimeTradeCollector',Collector)
+    monkeypatch.setattr(main_module,'settings',SimpleNamespace(collector_enabled=True,collector_mode='external',live_ws_enabled=True,hist_api_key='test'))
+    async def exercise():
+        async with main_module.lifespan(None):await asyncio.sleep(0)
+    asyncio.run(exercise())
+    assert events==[]

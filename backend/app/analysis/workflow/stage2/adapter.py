@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.knowledge.contracts import PromptSnapshot
 from app.analysis.contracts import Decision, Stage1Result, Stage2Result, TerminalResult
 from app.analysis.workflow.stage1.core.compat import PROMPT_DIR
 from app.analysis.workflow.stage1.core.data.base import KlineFrame
@@ -34,10 +35,11 @@ def build_original_stage2_messages(
     *,
     decision_stance: str = "conservative",
     precheck_context: dict[str, Any] | None = None,
+    prompt_snapshot: PromptSnapshot | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any], list[str]]:
     stage1_json = stage1_result_to_original(stage1)
     strategy_files = route_strategy_files(stage1_json)
-    messages = PromptAssembler(PROMPT_DIR).build_stage2(
+    messages = PromptAssembler(PROMPT_DIR, prompt_contents=prompt_snapshot.contents if prompt_snapshot is not None else None).build_stage2(
         frame,
         stage1_json,
         strategy_files,

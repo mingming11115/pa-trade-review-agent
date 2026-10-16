@@ -96,7 +96,7 @@ def test_parse_live_trade_ignores_control_and_invalid_messages():
     messages = (
         "not-json",
         json.dumps({"type": "connected"}),
-        json.dumps({"symbol": "MES.c.0", "ts_event": 1, "price": 1, "size": 1}),
+        json.dumps({"symbol": "GC.c.0", "ts_event": 1, "price": 1, "size": 1}),
         json.dumps({"symbol": "ES.c.0", "ts_event": 1, "price": 1}),
         json.dumps({"symbol": "ES.c.0", "ts_event": 1, "price": 1, "size": 0}),
     )
@@ -104,45 +104,26 @@ def test_parse_live_trade_ignores_control_and_invalid_messages():
     assert [parse_live_trade(message) for message in messages] == [None] * len(messages)
 
 
-def test_persist_live_trade_builds_atomic_minute_ohlcv_upsert(monkeypatch):
-    captured = []
+import pytest
+from test_market_archive import archive_db, record
 
-    class FakeSession:
-        async def __aenter__(self):
-            return self
 
-        async def __aexit__(self, *_):
-            return None
-
-        async def execute(self, statement):
-            captured.append(statement)
-
-        async def commit(self):
-            return None
-
-    monkeypatch.setattr("app.market.live.SessionFactory", FakeSession)
-    trade = LiveTrade(
-        symbol="ES",
-        timestamp=datetime(2026, 8, 11, 12, 2, 59, 999999, tzinfo=UTC),
-        price=6412.25,
-        size=3,
-    )
-
-    asyncio.run(persist_live_trade(trade))
-
-    compiled = captured[0].compile(dialect=postgresql.dialect())
-    sql = str(compiled).lower()
-    params = compiled.params
-    assert params["symbol"] == "ES"
-    assert params["period"] == "1m"
-    assert params["opened_at"] == datetime(2026, 8, 11, 12, 2, tzinfo=UTC)
-    assert params["open"] == params["high"] == params["low"] == params["close"] == 6412.25
-    assert params["volume"] == 3
-    assert params["source"] == "websocket:trades"
-    assert "greatest(" in sql
-    assert "least(" in sql
-    assert "market_bars.volume + excluded.volume" in sql
-    assert "close = excluded.close" in sql
+@pytest.mark.asyncio
+async def test_live_archive_deduplicates_and_preserves_chronological_open_close(archive_db,monkeypatch):
+    archive,engine,factory=archive_db
+    monkeypatch.setattr("app.market.live.SessionFactory",factory)
+    later=LiveTrade(symbol="MES",timestamp=datetime(2026,9,30,10,50,20,tzinfo=UTC),price=102,size=2,event_key="later")
+    earlier=LiveTrade(symbol="MES",timestamp=datetime(2026,9,30,10,50,10,tzinfo=UTC),price=100,size=3,event_key="earlier")
+    await persist_live_trade(later)
+    await persist_live_trade(earlier)
+    await persist_live_trade(later)
+    bars=await archive.read_archive_bars("MES","1m",datetime(2026,9,30,10,tzinfo=UTC),datetime(2026,9,30,11,tzinfo=UTC))
+    assert len(bars)==1 and bars[0].open==100 and bars[0].close==102 and bars[0].volume==5
+    async with factory.begin() as session:
+        await archive.write_archive_records(session,[record()])
+    await persist_live_trade(LiveTrade(symbol="MES",timestamp=later.timestamp,price=999,size=500,event_key="after-confirmed"))
+    bars=await archive.read_archive_bars("MES","1m",datetime(2026,9,30,10,tzinfo=UTC),datetime(2026,9,30,11,tzinfo=UTC))
+    assert bars[0].close==101.000000001 and bars[0].volume==7
 
 
 def test_realtime_collector_authenticates_subscribes_and_persists(monkeypatch):

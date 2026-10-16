@@ -21,6 +21,7 @@ export interface SidebarNavAnalysisRun {
 }
 
 interface SidebarNavProps {
+  onOpenRecords?: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
   openSections: Record<WorkbenchMode, boolean>;
@@ -103,6 +104,7 @@ function runLabel(run: SidebarNavAnalysisRun): string {
 }
 
 export function SidebarNav({
+  onOpenRecords,
   collapsed,
   onToggleCollapsed,
   openSections,
@@ -136,6 +138,7 @@ export function SidebarNav({
           <button aria-label="展开侧边栏" onClick={onExpand} title="侧边栏" type="button">
             <span aria-hidden="true">☰</span>
           </button>
+          {onOpenRecords && <button aria-label="交易记录" data-records-entry onClick={onOpenRecords} title="交易记录" type="button"><DocIcon /></button>}
           <span
             aria-hidden="true"
             className={analysisRunning ? "rail-status running" : "rail-status"}
@@ -149,6 +152,7 @@ export function SidebarNav({
   return (
     <div className="sidebar-shell">
       <header className="panel-header sidebar-header">
+        <strong>任务导航</strong>
         <button
           aria-label="收起侧边栏"
           className="sidebar-toggle"
@@ -161,8 +165,7 @@ export function SidebarNav({
       </header>
 
       <div className="sidebar-scroll">
-        <div className="sidebar-group-title">项目</div>
-
+        {onOpenRecords && <nav aria-label="交易记录"><button className="sidebar-l1" data-records-entry type="button" onClick={onOpenRecords}><span className="sidebar-l1-main"><DocIcon /><span>交易记录</span></span></button></nav>}
         <div className="sidebar-tree">
           <section className="sidebar-branch">
             <div className="sidebar-l1-row">

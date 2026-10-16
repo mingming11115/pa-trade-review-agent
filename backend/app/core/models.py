@@ -52,6 +52,7 @@ class HistoricalQuery(BaseModel):
     end: datetime
     analysis_mode: Literal["trade_review", "historical", "realtime"] = "historical"
     trades: list[AnalysisTradeInput] = Field(default_factory=list)
+    replay_context: dict[str, object] | None = None
 
     @model_validator(mode="after")
     def validate_range(self) -> "HistoricalQuery":

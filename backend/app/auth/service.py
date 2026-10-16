@@ -15,6 +15,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.config import Settings, get_settings
 from app.core.database import Base, SessionFactory, ensure_schema
 from app.core.errors import AppError
+from app.core.user_context import set_current_user_id
 from app.personal.service import set_settings_scope
 
 
@@ -114,6 +115,7 @@ async def login(payload: LoginInput, response: Response) -> UserPublic:
 
 async def current_user(pa_session: str | None = Cookie(None, alias=SESSION_COOKIE)) -> UserPublic:
     """从会话 Cookie 解析当前登录用户；未启用认证时返回本地管理员。"""
+    set_current_user_id(None)
     settings = get_settings()
     if not settings.auth_required and not pa_session:
         set_settings_scope("local")
@@ -127,6 +129,7 @@ async def current_user(pa_session: str | None = Cookie(None, alias=SESSION_COOKI
     if user is None or not user.active:
         raise AppError("session_expired", "登录已过期，请重新登录", 401)
     set_settings_scope(user.username)
+    set_current_user_id(user.id)
     return UserPublic(id=user.id, username=user.username, role=user.role, auth_required=settings.auth_required)
 
 

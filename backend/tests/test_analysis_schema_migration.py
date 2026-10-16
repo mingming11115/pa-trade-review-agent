@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.analysis.tasks.models import AnalysisAnnotation, AnalysisRun, AnalysisStageAttempt, AnalysisTask
 from app.auth.service import User  # noqa: F401
 from app.core.database import ensure_schema
-from app.market.service import CollectionState, MarketBar  # noqa: F401
+from app.market.service import CollectionState  # noqa: F401
 
 
 @pytest.mark.anyio

@@ -31,6 +31,7 @@ from app.core.logging_context import (
     set_trace_context,
 )
 from app.core.models import DemoAnalysisResponse, HealthResponse, HistoricalQuery, Period
+from app.core.user_context import reset_current_user_id, set_current_user_id
 from app.market.service import (
     CollectionStatus,
     LocalFirstMarketProvider,
@@ -62,6 +63,8 @@ from app.personal.service import (
 )
 from app.market.provider import MassiveHistoricalProvider
 from app.market.live import RealtimeTradeCollector
+from app.knowledge.routes import router as knowledge_router
+from app.knowledge.service import resolve_prompt_snapshot, get_or_create_run_prompt_snapshot
 from app.analysis.workflow.graph import build_stage1_debug_preview, run_demo_analysis_workflow, stream_demo_analysis_workflow
 from app.followup.service import FollowupRequest, stream_followup_turn, list_followup_history, FollowupMessagePublic
 from app.llm.langfuse_tracer import shutdown as shutdown_langfuse
@@ -149,7 +152,7 @@ async def lifespan(_: FastAPI):
     await ensure_schema()
     await bootstrap_admin(settings)
     collector = MinuteCollector(settings)
-    if settings.collector_enabled:
+    if settings.collector_enabled and getattr(settings,"collector_mode","embedded") == "embedded":
         # 历史分钟级 K 线采集器
         historical_task = asyncio.create_task(
             collector.run_forever(), name="pa-minute-collector"
@@ -167,7 +170,7 @@ async def lifespan(_: FastAPI):
     # 实时逐笔交易采集器（仅在配置启用且存在 API Key 时启动）
     realtime_task = asyncio.create_task(
         realtime_collector.run_forever(), name="pa-realtime-trade-collector"
-    ) if settings.live_ws_enabled and settings.hist_api_key else None
+    ) if settings.live_ws_enabled and settings.hist_api_key and getattr(settings,"collector_mode","embedded") == "embedded" else None
     try:
         yield
     finally:
@@ -191,6 +194,9 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="PA Market Analysis Demo", version="0.2.0", lifespan=lifespan)
 app.include_router(analysis_task_router)
+app.include_router(knowledge_router)
+from app.replay.routes import router as replay_router
+app.include_router(replay_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.frontend_origin],
@@ -210,6 +216,7 @@ async def request_context(request: Request, call_next):
     request.state.trace_id = trace_id
     request.state.request_id = trace_id
     tokens = set_trace_context(trace_id)
+    user_token = set_current_user_id(None)
     is_market_bars = request.url.path == "/api/v1/market/bars"
     started_at = perf_counter()
     try:
@@ -288,6 +295,7 @@ async def request_context(request: Request, call_next):
         )
         return response
     finally:
+        reset_current_user_id(user_token)
         reset_trace_context(tokens)
 
 
@@ -494,7 +502,9 @@ async def demo_analyze(
     _: UserPublic = Depends(limit_expensive),
 ):
     """执行完整的两阶段价格行为分析（非流式），并持久化结果。"""
-    result = await run_demo_analysis_workflow(provider, query)
+    run_id = uuid.uuid4()
+    prompt_snapshot = await get_or_create_run_prompt_snapshot(run_id, _.id)
+    result = await run_demo_analysis_workflow(provider, query, run_id=run_id, prompt_snapshot=prompt_snapshot)
     await persist_analysis_result(result)
     return result
 
@@ -506,9 +516,11 @@ async def demo_analyze_stream(
     _: UserPublic = Depends(limit_expensive),
 ):
     """以流式方式执行两阶段分析，逐步推送分析进度和最终结果。"""
+    run_id = uuid.uuid4()
+    prompt_snapshot = await get_or_create_run_prompt_snapshot(run_id, _.id)
     async def events():
         try:
-            async for event in stream_demo_analysis_workflow(provider, query):
+            async for event in stream_demo_analysis_workflow(provider, query, run_id=run_id, prompt_snapshot=prompt_snapshot):
                 if event["type"] == "result":
                     await persist_analysis_result(DemoAnalysisResponse.model_validate(event["result"]))
                 yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -604,7 +616,8 @@ async def analysis_debug_preview(
     _: UserPublic = Depends(current_user),
 ) -> DebugPreview:
     """生成阶段一调试预览数据（不调用 LLM），用于检查输入数据质量。"""
-    return await build_stage1_debug_preview(provider, query)
+    prompt_snapshot = await resolve_prompt_snapshot(_.id)
+    return await build_stage1_debug_preview(provider, query, prompt_snapshot=prompt_snapshot)
 
 
 @app.get("/api/v1/personal/settings", response_model=PersonalSettingsPublic)

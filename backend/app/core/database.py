@@ -25,4 +25,11 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 async def ensure_schema() -> None:
     """幂等创建当前 ORM Schema，不执行迁移或删除。"""
     async with engine.begin() as connection:
+        if connection.dialect.name == "postgresql":
+            from app.market.archive import ensure_archive_schema
+            from sqlalchemy import text
+            await connection.execute(text("SELECT pg_advisory_xact_lock(724019221)"))
+            await ensure_archive_schema(connection)
         await connection.run_sync(Base.metadata.create_all)
+        if connection.dialect.name == "postgresql" and "market_collection_states" in Base.metadata.tables:
+            await connection.execute(text("ALTER TABLE public.market_collection_states ADD COLUMN IF NOT EXISTS covered_until timestamptz"))

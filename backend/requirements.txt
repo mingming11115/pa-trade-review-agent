@@ -12,4 +12,3 @@ uvicorn[standard]>=0.30,<1
 websockets>=15,<18
 python-socks>=2.7,<3
 langfuse>=4,<5
-langfuse>=2.0,<4

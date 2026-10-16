@@ -1,13 +1,21 @@
 import { ChangeEvent, CSSProperties, FormEvent, KeyboardEvent, PointerEvent, ReactNode, useEffect, useRef, useState } from "react";
 
-import { analyzeRangeStream, cancelRun, confirmTradeImport, createAnalysisTask, createTrade, deleteTrade, ensureLiveAnalysisTask, getAdminOrchestration, getAdminPromptFile, getAlerts, getAlertRules, getAnalysisDetail, getAnalysisHistory, getCollectionStatus, getCurrentUser, getDebugPreview, getFollowupHistory, getHealth, getMarketBars, getPersonalSettings, getPromptVersions, getRecentTrades, getRunDetail, getTokenUsage, getTradeImports, listAnalysisTaskRuns, listAnalysisTasks, login, logout, markAlertRead, previewTradeImport, rollbackPromptVersion, saveAdminPromptFile, saveAlertRule, savePersonalSettings, sendFollowupStream, startAnalysisTaskRun, updateAnalysisTask, updateTrade, waitForRunsTerminal } from "./api";
-import { TradingChart } from "./TradingChart";
+import { analyzeRangeStream, cancelRun, confirmTradeImport, createAnalysisTask, createTrade, deleteTrade, ensureLiveAnalysisTask, getKnowledgeOrchestration, getKnowledgePrompt, getAlerts, getAlertRules, getAnalysisDetail, getAnalysisHistory, getCollectionStatus, getCurrentUser, getDebugPreview, getFollowupHistory, getHealth, getMarketBars, getPersonalSettings, getKnowledgeVersions, getRecentTrades, getRunDetail, getTokenUsage, getTradeImports, listAnalysisTaskRuns, listAnalysisTasks, login, logout, markAlertRead, previewTradeImport, rollbackKnowledgeVersion, saveKnowledgePrompt, saveAlertRule, savePersonalSettings, sendFollowupStream, startAnalysisTaskRun, updateAnalysisTask, updateTrade, waitForRunsTerminal } from "./api";
+import { ChartReplayTrading } from "./replay/ChartReplayTrading";
+import { useReplayTradingController } from "./replay/useReplayTradingController";
+import { SavedReplayList } from "./replay/SavedReplayList";
+import { ReplayWorkspace } from "./replay/ReplayWorkspace";
+import { TradeRecords, type TradeRecordSource } from "./TradeRecords";
+import { TradeJournal } from "./TradeJournal";
+import { errorText } from "./replay/useReplaySession";
+import { KnowledgePromptBrowser } from "./KnowledgePromptBrowser";
+import { KnowledgeStageGuide } from "./KnowledgeStageGuide";
 import { DecisionFlowViz } from "./DecisionFlowViz";
 import { MoreMenu } from "./MoreMenu";
 import { useDialogFocus } from "./useDialogFocus";
 import { useTypewriterText } from "./useTypewriterText";
 import { barSummaryDisplay, formatBarRange } from "./barDisplay";
-import { ANALYSIS_LOOKBACK_BARS, chartIdentity, closedBars, lastClosedTs, liveLookbackWindow, LIVE_POLL_MS, mergeBars, PERIOD_MINUTES } from "./feed";
+import { ANALYSIS_LOOKBACK_BARS, chartIdentity, closedBars, formatChartTime, lastClosedTs, liveLookbackWindow, LIVE_POLL_MS, mergeBars, PERIOD_MINUTES } from "./feed";
 import type {
   ApiError,
   Bar,
@@ -24,8 +32,7 @@ import type {
   PersonalSettings,
   TokenUsageSummary,
   OrchestrationView,
-  PromptFileDocument,
-  PipelineStage,
+  KnowledgeDocument,
   Stage1Result,
   Stage2Result,
   TradeReviewResult,
@@ -35,7 +42,7 @@ import type {
   AlertRule,
   AlertRecord,
   UserSession,
-  PromptVersion,
+  KnowledgeVersion,
   TradeImportBatch,
   AnalysisStreamEvent,
   FollowupMessage,
@@ -138,6 +145,9 @@ function barSummaryText(item: { summary?: string; reason?: string }): string {
 const symbols = [
   ["ES", "ES · 标普 500 E-mini"],
   ["NQ", "NQ · 纳斯达克 100 E-mini"],
+  ["MES", "MES · 微型标普 500"],
+  ["MNQ", "MNQ · 微型纳斯达克 100"],
+  ["MGC", "MGC · 微型黄金"],
 ] as const;
 
 const periods: Period[] = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
@@ -311,31 +321,6 @@ function createId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
 }
 
-function stageBasisLabel(stage: PipelineStage): string {
-  if (stage.kind === "llm") return "LLM 推理";
-  if (stage.kind === "gate") return "代码/规则";
-  if (stage.kind === "review") return "后处理/审查";
-  return "确定性代码";
-}
-
-function buildNodeBasis(stage: PipelineStage): string[] {
-  const basis = [`执行类型：${stageBasisLabel(stage)}`, `节点 ID：${stage.id}`];
-  if (stage.description) basis.push(`节点说明：${stage.description}`);
-  if (stage.prompt_files.length) {
-    basis.push(
-      ...stage.prompt_files.flatMap((file) => [
-        `提示词：${file.filename}`,
-        `加载位置：${file.placement}`,
-        `触发条件：${file.condition}`,
-        `是否可编辑：${file.editable ? "是" : "否"}`,
-      ]),
-    );
-  } else {
-    basis.push("该节点不加载提示词，依据来自代码或规则逻辑");
-  }
-  return basis;
-}
-
 function buildNotes(source: string, bars: Bar[]): string[] {
   return [
     `${source} 已标准化导入 ${bars.length} 根 K 线`,
@@ -440,14 +425,30 @@ export function ReviewWorkbenchShell() {
   const [availableTrades, setAvailableTrades] = useState<Trade[]>([]);
   const [selectedTradeIds, setSelectedTradeIds] = useState<string[]>([]);
   const [orderPickerOpen, setOrderPickerOpen] = useState(false);
+  const replayTrading=useReplayTradingController();
+  const replayNavigationRef=useRef(replayTrading);
+  replayNavigationRef.current=replayTrading;
+  const [replayView, setReplayView] = useState<{mode:'records'|'historical';tradeIds?:string[]}|null>(null);
+  const [recordSource, setRecordSource] = useState<TradeRecordSource>('replay');
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [recordsMutating, setRecordsMutating] = useState(false);
+  const [recordsError, setRecordsError] = useState('');
+  const [recordsRefresh, setRecordsRefresh] = useState(0);
+  const recordsReadRevision = useRef(0);
   const [debugPreview, setDebugPreview] = useState<DebugPreview | null>(null);
   const [personalOpen, setPersonalOpen] = useState(false);
   const [personalSettings, setPersonalSettings] = useState<PersonalSettings | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenUsageSummary | null>(null);
   const [personalTab, setPersonalTab] = useState<"models" | "usage" | "trades">("models");
   const [adminOpen, setAdminOpen] = useState(false);
+  const [knowledgeView, setKnowledgeView] = useState<"editor" | "guide">("editor");
   const [orchestration, setOrchestration] = useState<OrchestrationView | null>(null);
-  const [promptDocument, setPromptDocument] = useState<PromptFileDocument | null>(null);
+  const [promptDocument, setPromptDocument] = useState<KnowledgeDocument | null>(null);
+  const [savedPromptContent, setSavedPromptContent] = useState("");
+  const [knowledgeBusy, setKnowledgeBusy] = useState(false);
+  const knowledgePending = useRef(false);
+  const knowledgeAuthEpoch = useRef(0);
+  const [versionsBefore, setVersionsBefore] = useState<number | null>(null);
   const [adminNotice, setAdminNotice] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistorySummary[]>([]);
@@ -459,7 +460,6 @@ export function ReviewWorkbenchShell() {
   const [editingTask, setEditingTask] = useState<SidebarTask | null>(null);
   const [taskDetails, setTaskDetails] = useState<TaskDetailSelection | null>(null);
   const [copiedRunId, setCopiedRunId] = useState<string | null>(null);
-  const [journalOpen, setJournalOpen] = useState(false);
   const [journalQuery, setJournalQuery] = useState("");
   const [alertRules, setAlertRules] = useState<AlertRule[]>([]);
   const [alerts, setAlerts] = useState<AlertRecord[]>([]);
@@ -467,8 +467,22 @@ export function ReviewWorkbenchShell() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [loginName, setLoginName] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
-  const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
+  const [promptVersions, setPromptVersions] = useState<KnowledgeVersion[]>([]);
   const [tradeImports, setTradeImports] = useState<TradeImportBatch[]>([]);
+  useEffect(() => {
+    if (replayView?.mode !== 'records' || recordSource !== 'real') return;
+    let active = true;
+    const readRevision = recordsReadRevision.current;
+    setRecordsLoading(true);
+    setRecordsError('');
+    Promise.all([getRecentTrades(), getTradeImports()]).then(([trades, imports]) => {
+      if (!active || readRevision !== recordsReadRevision.current) return;
+      setAvailableTrades(trades);
+      setTradeImports(imports);
+    }).catch(caught => { if (active && readRevision === recordsReadRevision.current) setRecordsError(errorText(caught)); })
+      .finally(() => { if (active) setRecordsLoading(false); });
+    return () => { active = false; };
+  }, [replayView?.mode, recordSource, recordsRefresh]);
   const [decisionView, setDecisionView] = useState<DecisionView>("realtime");
   const [rightPanelPercent, setRightPanelPercent] = useState(44);
   const [streamEvents, setStreamEvents] = useState<AnalysisStreamEvent[]>([]);
@@ -488,6 +502,9 @@ export function ReviewWorkbenchShell() {
     ? leftSidebarManualOverride
     : (leftSidebarAutoCollapsed && !leftSidebarHoverExpanded);
   const [feed, setFeed] = useState<FeedState>(() => emptyFeed("history"));
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [feedHistoryAsOf, setFeedHistoryAsOf] = useState<string | null>(null);
+  const [feedRefresh, setFeedRefresh] = useState(0);
   const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
   /** Opened from analysis history: freeze chart at analysis tip and enable replay. */
   const [historyReplayActive, setHistoryReplayActive] = useState(false);
@@ -519,20 +536,28 @@ export function ReviewWorkbenchShell() {
   const taskDialogRef = useDialogFocus({ open: Boolean(taskComposer), onDismiss: () => { setTaskComposer(null); setEditingTask(null); } });
   const taskDetailsDialogRef = useDialogFocus({ open: Boolean(taskDetails), onDismiss: () => setTaskDetails(null) });
   const historyDialogRef = useDialogFocus({ open: historyOpen, onDismiss: () => setHistoryOpen(false) });
-  const journalDialogRef = useDialogFocus({ open: journalOpen, onDismiss: () => setJournalOpen(false) });
   const orderPickerDialogRef = useDialogFocus({ open: orderPickerOpen, onDismiss: () => setOrderPickerOpen(false) });
   const tradePreviewDialogRef = useDialogFocus({ open: Boolean(tradePreview), onDismiss: () => { setPendingTradeFile(null); setTradePreview(null); } });
   const personalDialogRef = useDialogFocus({ open: personalOpen, onDismiss: () => setPersonalOpen(false) });
-  const adminDialogRef = useDialogFocus({ open: adminOpen, onDismiss: () => setAdminOpen(false) });
+  const adminDialogRef = useDialogFocus({ open: adminOpen, onDismiss: closeKnowledge });
   const loginDialogRef = useDialogFocus({ open: loginOpen, dismissible: false });
   const debugDialogRef = useDialogFocus({ open: Boolean(debugPreview), dismissible: false });
   const splitDraggingRef = useRef(false);
 
   useEffect(() => {
+    let acceptedPath=window.location.pathname;
     const syncFromLocation = () => {
-      const route = getWorkbenchRoute(window.location.pathname);
-      setWorkbenchMode(route.workbenchMode);
-      setMode(route.mode);
+      const desiredPath=window.location.pathname;
+      const apply=()=>{
+        const route = getWorkbenchRoute(desiredPath);
+        window.history.replaceState(null,"",desiredPath);
+        acceptedPath=desiredPath;
+        setWorkbenchMode(route.workbenchMode);
+        setMode(route.mode);
+      };
+      const replay=replayNavigationRef.current;
+      if(replay.id||replay.busy){window.history.replaceState(null,"",acceptedPath);replay.requestLeave(apply);}
+      else apply();
     };
 
     syncFromLocation();
@@ -614,21 +639,54 @@ export function ReviewWorkbenchShell() {
   const feedPeriod = session.period || "";
 
   useEffect(() => {
+    setFeedHistoryAsOf(null);
+    setFeedLoading(false);
     if (!session.symbol || !session.period) return;
     const period = session.period as Period;
 
     const controller = new AbortController();
     let cancelled = false;
     let timer = 0;
+    let pulling = false;
+    let hasBars = false;
+    let fallbackChecked = false;
 
     async function pull(kind: FeedState["kind"], merge: boolean) {
+      if (pulling) return;
+      pulling = true;
+      if (!hasBars) setFeedLoading(true);
+      const request = new AbortController();
+      const cancelRequest = () => request.abort();
+      controller.signal.addEventListener("abort", cancelRequest, { once: true });
+      let timedOut = false;
+      const deadline = window.setTimeout(() => { timedOut = true; request.abort(); }, kind === "live" ? 25000 : 150000);
       try {
         const range = kind === "live"
           ? liveLookbackWindow(period)
           : { start: toUtcIso(session.start), end: toUtcIso(session.end) };
         if (kind === "history" && (!session.start || !session.end)) return;
-        const market = await getMarketBars(session.symbol, period, range.start, range.end, controller.signal, kind === "live", kind === "live" ? "live_poll" : "history_range");
+        let market = await getMarketBars(session.symbol, period, range.start, range.end, request.signal, kind === "live", kind === "live" ? "live_poll" : "history_range");
         if (cancelled) return;
+        let historical = false;
+        if (kind === "live" && !market.bars.length && !hasBars && !fallbackChecked) {
+          // Seed an empty chart from the known archive tip, then keep polling now.
+          // This is one cache-only window, not an unbounded historical backfill.
+          fallbackChecked = true;
+          const statuses = await getCollectionStatus(request.signal);
+          if (cancelled) return;
+          const latest = statuses.find(status => status.symbol === session.symbol)?.latest_closed_at;
+          const latestTime = latest ? Date.parse(latest) : NaN;
+          if (Number.isFinite(latestTime) && latestTime <= Date.parse(range.start)) {
+            const previous = liveLookbackWindow(period, new Date(latestTime));
+            market = await getMarketBars(session.symbol, period, previous.start, previous.end, request.signal, true, "live_poll");
+            historical = market.bars.length > 0;
+          }
+        }
+        if (cancelled) return;
+        if (market.bars.length) {
+          hasBars = true;
+          setFeedHistoryAsOf(historical ? market.bars[market.bars.length - 1].timestamp : null);
+        }
         setFeed((current) => {
           const bars = merge ? mergeBars(current.bars, market.bars) : market.bars;
           return {
@@ -641,8 +699,8 @@ export function ReviewWorkbenchShell() {
           };
         });
       } catch (caught) {
-        if (cancelled || (caught instanceof DOMException && caught.name === "AbortError")) return;
-        const message = (caught as ApiError)?.message ?? "行情刷新失败";
+        if (cancelled || (!timedOut && caught instanceof DOMException && caught.name === "AbortError")) return;
+        const message = timedOut ? "行情加载超时，请重试。" : (caught as ApiError)?.message ?? "行情刷新失败";
         setFeed((current) => ({
           ...current,
           kind,
@@ -650,6 +708,11 @@ export function ReviewWorkbenchShell() {
           period: session.period,
           pollError: message,
         }));
+      } finally {
+        window.clearTimeout(deadline);
+        controller.signal.removeEventListener("abort", cancelRequest);
+        pulling = false;
+        if (!cancelled) setFeedLoading(false);
       }
     }
 
@@ -663,7 +726,7 @@ export function ReviewWorkbenchShell() {
       controller.abort();
       if (timer) window.clearInterval(timer);
     };
-  }, [feedKind, feedPeriod, historyReplayActive, mode, session.end, session.period, session.start, session.symbol, workbenchMode]);
+  }, [feedKind, feedPeriod, feedRefresh, historyReplayActive, mode, session.end, session.period, session.start, session.symbol, workbenchMode]);
 
   const currentResult = results[mode];
   const unavailable = health === null;
@@ -672,6 +735,7 @@ export function ReviewWorkbenchShell() {
     ? feed.bars
     : activeData?.bars ?? [];
   const emptyStateVisible = chartBars.length === 0 && !activeData;
+  const liveChartConfigured = workbenchMode === "analysis" && mode === "live" && !!session.symbol && !!session.period;
   const chartTimezone = CHART_TIMEZONE;
   const formatEvidence = (text: string) => text;
   const chartLocked = mode !== "live" || historyReplayActive;
@@ -1051,13 +1115,25 @@ export function ReviewWorkbenchShell() {
         : current);
       setTasksByType((current) => ({ ...current, [task.type]: current[task.type].map((item) => item.id === task.id ? { ...item, status: "running" } : item) }));
       const details = await waitForRunsTerminal(executions.map((item) => item.run_id), { intervalMs: 500, timeoutMs: 60_000, signal: controller.signal });
-      const detail = details[0];
+      const unsuccessful = details.filter((item) => !["completed", "completed_with_warnings"].includes(item.status));
+      if (unsuccessful.length) {
+        const labels: Record<string, string> = { failed: "分析失败", cancelled: "分析已取消", timed_out: "分析超时", degraded: "分析降级，未生成完整结果" };
+        setError({
+          code: unsuccessful[0].failure_code || "analysis_incomplete",
+          message: unsuccessful.map((item) => `${item.period} · ${labels[item.status] || "分析未完成"}${item.failure_message ? `：${item.failure_message}` : ""}`).join("；"),
+        });
+      }
+      const warnings = details.filter((item) => item.status === "completed_with_warnings");
+      if (warnings.length && !unsuccessful.length) {
+        setError({ code: "analysis_warnings", message: warnings.map((item) => `${item.period} · 分析完成，但存在警告${item.failure_message ? `：${item.failure_message}` : "，请查看分析审计"}`).join("；") });
+      }
+      await refreshDurableTasks();
+      await loadAnalysisRuns(task.id);
+      const detail = details.find((item) => ["completed", "completed_with_warnings"].includes(item.status));
       if (!detail) return;
       const payloadResult = detail.result;
       if (detail.mode === "trade_review") {
         setStreamEvents((current) => [...current, { type: "status", stage: "complete", message: `复盘 ${detail.period} · ${detail.status}` }]);
-        await refreshDurableTasks();
-        await loadAnalysisRuns(task.id);
         return;
       }
       if (payloadResult && "review_children" in payloadResult) {
@@ -1077,8 +1153,8 @@ export function ReviewWorkbenchShell() {
         }
         return;
       }
-      if (payloadResult) {
-        const result = payloadResult;
+      if (payloadResult && payloadResult.query && payloadResult.analysis) {
+        const result = payloadResult as DemoAnalysisResponse;
         setStreamEvents((current) => [...current, { type: "result", stage: "complete", message: "分析完成", result }]);
         const targetMode: Mode = result.query.analysis_mode === "realtime" ? "live" : "range";
         setMode(targetMode);
@@ -1089,8 +1165,6 @@ export function ReviewWorkbenchShell() {
           setFollowupByAnalysis((current) => ({ ...current, [runIdForFollowup]: [] }));
         }
       }
-      await refreshDurableTasks();
-      await loadAnalysisRuns(task.id);
       setExpandedAnalysisTasks((current) => ({ ...current, [task.id]: true }));
       setTaskDetails(null);
     } catch (caught) { setError(caught as ApiError); }
@@ -1346,62 +1420,117 @@ export function ReviewWorkbenchShell() {
     }
   }
 
-  async function selectPromptFile(filename: string) {
-    setLoading(true);
+  function resetKnowledgeSession() {
+    knowledgeAuthEpoch.current += 1;
+    knowledgePending.current = false;
+    setKnowledgeBusy(false);
+    setAdminOpen(false);
+    setKnowledgeView("editor");
+    setPromptDocument(null);
+    setSavedPromptContent("");
+    setPromptVersions([]);
+    setVersionsBefore(null);
     setAdminNotice(null);
-    try {
-      setPromptDocument(await getAdminPromptFile(filename));
-      setPromptVersions([]);
-    } catch (caught) {
-      setError(caught as ApiError);
-    } finally {
-      setLoading(false);
-    }
+  }
+
+  function discardPromptDraft(): boolean {
+    return !promptDocument || promptDocument.content === savedPromptContent
+      || window.confirm("有未保存的修改，确认放弃草稿？");
+  }
+
+  function closeKnowledge() {
+    if (knowledgePending.current || !discardPromptDraft()) return;
+    setAdminOpen(false);
+  }
+
+  function acceptPrompt(document: KnowledgeDocument) {
+    setPromptDocument(document);
+    setSavedPromptContent(document.content);
+    setPromptVersions([]);
+    setVersionsBefore(null);
+  }
+
+  async function selectPromptFile(filename: string) {
+    if (knowledgePending.current || !discardPromptDraft()) return;
+    const authEpoch = knowledgeAuthEpoch.current;
+    knowledgePending.current = true;
+    setKnowledgeBusy(true);
+    setAdminNotice(null);
+    try { const document = await getKnowledgePrompt(filename); if (authEpoch === knowledgeAuthEpoch.current) acceptPrompt(document); }
+    catch (caught) { if (authEpoch === knowledgeAuthEpoch.current) setAdminNotice((caught as ApiError).message || "知识库读取失败，请重试"); }
+    finally { if (authEpoch === knowledgeAuthEpoch.current) { knowledgePending.current = false; setKnowledgeBusy(false); } }
   }
 
   async function openAdminCenter() {
-    setLoading(true);
+    if (knowledgePending.current) return;
+    const authEpoch = knowledgeAuthEpoch.current;
+    knowledgePending.current = true;
+    setKnowledgeBusy(true);
     setAdminNotice(null);
     try {
-      const view = await getAdminOrchestration();
-      setOrchestration(view);
-      setAdminOpen(true);
+      const view = await getKnowledgeOrchestration();
+      if (authEpoch !== knowledgeAuthEpoch.current) return;
       const firstFile = view.stages.flatMap((stage) => stage.prompt_files)[0];
-      if (firstFile) { setPromptDocument(await getAdminPromptFile(firstFile.filename)); setPromptVersions([]); }
-    } catch (caught) {
-      setError(caught as ApiError);
-    } finally {
-      setLoading(false);
-    }
+      const document = firstFile ? await getKnowledgePrompt(firstFile.filename) : null;
+      if (authEpoch !== knowledgeAuthEpoch.current) return;
+      setOrchestration(view);
+      if (document) acceptPrompt(document);
+      setKnowledgeView("editor");
+      setAdminOpen(true);
+    } catch (caught) { if (authEpoch === knowledgeAuthEpoch.current) setError(caught as ApiError); }
+    finally { if (authEpoch === knowledgeAuthEpoch.current) { knowledgePending.current = false; setKnowledgeBusy(false); } }
+  }
+
+  async function loadKnowledgeVersions(append = false) {
+    if (!promptDocument || knowledgePending.current) return;
+    const authEpoch = knowledgeAuthEpoch.current;
+    knowledgePending.current = true;
+    setKnowledgeBusy(true);
+    try {
+      const page = await getKnowledgeVersions(promptDocument.filename, append ? versionsBefore ?? undefined : undefined);
+      if (authEpoch !== knowledgeAuthEpoch.current) return;
+      setPromptVersions(current => append ? [...current, ...page.items] : page.items);
+      setVersionsBefore(page.next_before_revision);
+    } catch (caught) { if (authEpoch === knowledgeAuthEpoch.current) setAdminNotice((caught as ApiError).message || "历史读取失败，请重试"); }
+    finally { if (authEpoch === knowledgeAuthEpoch.current) { knowledgePending.current = false; setKnowledgeBusy(false); } }
   }
 
   async function submitLogin(event: FormEvent) {
     event.preventDefault(); setLoading(true); setError(null);
-    try { setUser(await login(loginName, loginPassword)); setLoginOpen(false); setLoginPassword(""); }
+    try { const nextUser = await login(loginName, loginPassword); resetKnowledgeSession(); setUser(nextUser); setLoginOpen(false); setLoginPassword(""); }
     catch (caught) { setError(caught as ApiError); } finally { setLoading(false); }
   }
 
-  async function signOut() { await logout(); setUser(null); setLoginOpen(true); }
+  async function signOut() { resetKnowledgeSession(); await logout(); setUser(null); setLoginOpen(true); }
 
-  async function restorePromptVersion(version: PromptVersion) {
-    if (!promptDocument || !window.confirm(`确认回滚到 ${formatDate(version.created_at)} 的版本？`)) return;
-    setPromptDocument(await rollbackPromptVersion(promptDocument.filename, version.id));
-    setPromptVersions(await getPromptVersions(promptDocument.filename));
-    setAdminNotice("已回滚并生成新的当前版本");
+  async function restoreKnowledgeVersion(version: KnowledgeVersion) {
+    if (!promptDocument || knowledgePending.current || !version.can_rollback
+        || !window.confirm(`确认回滚到第 ${version.revision} 版？未保存的草稿将被替换。`)) return;
+    await writeKnowledge(version.id);
   }
 
-  async function savePromptDocument() {
-    if (!promptDocument) return;
-    setLoading(true);
+  async function savePromptDocument() { await writeKnowledge(); }
+
+  async function writeKnowledge(rollbackId?: string) {
+    if (!promptDocument || knowledgePending.current) return;
+    const authEpoch = knowledgeAuthEpoch.current;
+    knowledgePending.current = true;
+    setKnowledgeBusy(true);
     setAdminNotice(null);
     try {
-      setPromptDocument(await saveAdminPromptFile(promptDocument));
-      setAdminNotice(`${promptDocument.filename} 已保存，下一次分析立即生效。`);
+      const document = rollbackId ? await rollbackKnowledgeVersion(promptDocument, rollbackId) : await saveKnowledgePrompt(promptDocument);
+      if (authEpoch !== knowledgeAuthEpoch.current) return;
+      acceptPrompt(document);
+      setAdminNotice(rollbackId ? "已回滚，仅影响自己的后续分析" : "已保存，仅影响自己的后续分析");
+      try {
+        const page = await getKnowledgeVersions(document.filename);
+        if (authEpoch !== knowledgeAuthEpoch.current) return;
+        setPromptVersions(page.items);
+        setVersionsBefore(page.next_before_revision);
+      } catch { if (authEpoch === knowledgeAuthEpoch.current) setAdminNotice("内容已保存；历史读取失败，请点击查看版本重试"); }
     } catch (caught) {
-      setError(caught as ApiError);
-    } finally {
-      setLoading(false);
-    }
+      if (authEpoch === knowledgeAuthEpoch.current) setAdminNotice((caught as ApiError).message || "保存失败，草稿已保留，请重试");
+    } finally { if (authEpoch === knowledgeAuthEpoch.current) { knowledgePending.current = false; setKnowledgeBusy(false); } }
   }
 
   function updateModel(index: number, field: string, value: string) {
@@ -1721,10 +1850,12 @@ export function ReviewWorkbenchShell() {
     }
   }
 
-  async function openJournal() {
-    setLoading(true);
-    try { const [trades, imports] = await Promise.all([getRecentTrades(), getTradeImports()]); setAvailableTrades(trades); setTradeImports(imports); setJournalOpen(true); }
-    catch (caught) { setError(caught as ApiError); } finally { setLoading(false); }
+  async function runJournalAction(action: () => Promise<void>) {
+    setRecordsMutating(true);
+    setRecordsError('');
+    try { await action(); }
+    catch (caught) { setRecordsError(errorText(caught)); }
+    finally { setRecordsMutating(false); }
   }
 
   async function editJournalTrade(trade: Trade) {
@@ -1738,7 +1869,9 @@ export function ReviewWorkbenchShell() {
 
   async function removeJournalTrade(trade: Trade) {
     if (!window.confirm(`确认删除交易 ${trade.contract_name} · ${formatDate(trade.entered_at)}？`)) return;
+    recordsReadRevision.current++;
     await deleteTrade(trade.id);
+    recordsReadRevision.current++;
     setAvailableTrades((current) => current.filter((item) => item.id !== trade.id));
   }
 
@@ -1800,33 +1933,45 @@ export function ReviewWorkbenchShell() {
   const reviewComposerTrades = taskComposer?.type === "review" ? availableTrades : [];
 
   return (
-    <main className="workbench-root">
+    <main className="workbench-root" onClickCapture={event=>{
+      if((!replayTrading.id&&!replayTrading.busy)||replayTrading.exitOpen)return;
+      const target=event.target as HTMLElement;
+      const button=target.closest<HTMLButtonElement>('button,a');
+      if(button&&!target.closest('[data-replay-interactive]')&&!button.matches('[aria-haspopup], [role=tab], .sidebar-toggle, .sidebar-chevron-btn')&&!(button.matches('.sidebar-l1')&&!button.closest('[data-records-entry]'))){
+        event.preventDefault();event.stopPropagation();
+        replayTrading.requestLeave(()=>window.setTimeout(()=>button.click(),0));
+      }
+    }}>
       <input ref={fileInputRef} accept=".xlsx,.csv" aria-label="Excel 交易文件" hidden onChange={handleTradeImport} type="file" />
 
       <header className="top-nav glass">
         <div className="top-nav-brand">
           <span className="brand-mark">PA</span>
           <div>
-            <strong>PA 智能体工作台</strong>
-            <small>Market intelligence workspace</small>
+            <strong>PA 工作台</strong>
           </div>
         </div>
 
         <div className="top-nav-actions">
           <MoreMenu items={[
+            { label: "交易记录", onSelect: () => setReplayView({mode:'records'}) },
             { label: "分析历史", onSelect: () => void openHistory() },
             { label: "导出当前分析", onSelect: exportCurrent, disabled: !activeData },
-            { label: "交易日志", onSelect: () => void openJournal() },
-            { label: "管理后台", onSelect: () => void openAdminCenter(), hidden: Boolean(health?.auth_required && user?.role !== "admin") },
+            { label: "个人知识库", onSelect: () => void openAdminCenter() },
             { label: "个人中心", onSelect: () => void openPersonalCenter() },
             { label: `退出 ${user?.username ?? ""}`.trim(), onSelect: () => void signOut(), hidden: !health?.auth_required, danger: true },
           ]} />
         </div>
       </header>
-      <div className="risk-banner"><span aria-hidden="true">i</span> AI 结果仅用于研究与复盘，不构成投资建议。行情超过预期更新时间时请勿据此决策。{loading && analysisAbortRef.current && <button onClick={() => analysisAbortRef.current?.abort()} type="button">取消当前任务</button>}</div>
+      {loading && <section className="workspace-heading" aria-label="任务状态">
+        <span className="workspace-state running">
+          <i aria-hidden="true" />任务处理中
+        </span>
+      </section>}
+      <div className="risk-banner"><span aria-hidden="true">i</span><p>AI 结果仅用于研究与复盘，不构成投资建议。行情超过预期更新时间时请勿据此决策。</p>{loading && analysisAbortRef.current && <button onClick={() => analysisAbortRef.current?.abort()} type="button">取消当前任务</button>}</div>
 
       <section
-        className={effectiveLeftCollapsed ? "shell-grid collapsed" : "shell-grid"}
+        className={`${effectiveLeftCollapsed ? "shell-grid collapsed" : "shell-grid"}${replayView ? " replay-mode" : ""}${replayTrading.id ? " chart-trading-mode" : ""}`}
         data-left-sidebar-mode={leftSidebarManualOverride !== null ? "manual" : leftSidebarAutoCollapsed ? "auto" : "default"}
         style={{
           "--center-panel-fr": `${100 - rightPanelPercent}fr`,
@@ -1839,6 +1984,7 @@ export function ReviewWorkbenchShell() {
           onMouseLeave={handleLeftSidebarMouseLeave}
         >
           <SidebarNav
+            onOpenRecords={()=>setReplayView({mode:'records'})}
             collapsed={effectiveLeftCollapsed}
             onToggleCollapsed={handleLeftSidebarToggle}
             onExpand={() => setLeftSidebarManualCollapsed(false)}
@@ -1860,6 +2006,7 @@ export function ReviewWorkbenchShell() {
             unavailable={unavailable}
             analysisRunning={Boolean(loading && analysisAbortRef.current)}
             onSelectTask={(taskId, type) => {
+              setReplayView(null);
               const task = tasksByType[type].find((item) => item.id === taskId);
               if (!task) return;
               setActiveSidebarLeaf(`task:${taskId}`);
@@ -1871,25 +2018,36 @@ export function ReviewWorkbenchShell() {
               window.history.pushState({}, "", buildWorkbenchPath(task.type === "review" ? "review" : "analysis", task.type === "review" ? "historical" : (task.config.analysisMode === "live" ? "live" : "range")));
               openTaskDetail(task);
             }}
-            onSelectAnalysisRun={(taskId, run) => { void openAnalysisRun(taskId, run); }}
+            onSelectAnalysisRun={(taskId, run) => { setReplayView(null); void openAnalysisRun(taskId, run); }}
             onNewReviewTask={() => {
+              setReplayView(null);
               setSidebarOpen((current) => ({ ...current, review: true }));
               void openTaskComposer("review");
             }}
             onNewAnalysisTask={() => {
+              setReplayView(null);
               setSidebarOpen((current) => ({ ...current, analysis: true }));
               void openTaskComposer("analysis");
             }}
           />
         </aside>
 
+        {replayView?.mode==='records' ? <TradeRecords source={recordSource} onSourceChange={setRecordSource} onClose={()=>setReplayView(null)}>
+          {recordSource==='replay' ? <SavedReplayList embedded onClose={()=>setReplayView(null)} onResume={(id,symbol)=>{setReplayView(null);updateSession('symbol',symbol);replayTrading.attach(id);}} onResult={(taskId,runId)=>{setReplayView(null);void openAnalysisRun(taskId,{id:runId,runId,status:'completed',createdAt:new Date().toISOString()});}}/> :
+            <TradeJournal trades={availableTrades} imports={tradeImports} loading={recordsLoading||recordsMutating||loading} error={recordsError} query={journalQuery} onQueryChange={setJournalQuery}
+              onRefresh={()=>setRecordsRefresh(value=>value+1)} onImport={()=>fileInputRef.current?.click()} onAdd={()=>void runJournalAction(addManualTrade)}
+              onEdit={trade=>void runJournalAction(()=>editJournalTrade(trade))} onDelete={trade=>void runJournalAction(()=>removeJournalTrade(trade))}
+              onReview={trade=>{syncReviewSessionFromTrades([trade.id]);setReplayView(null);setWorkbenchMode('review');setMode('historical');}}
+              onReplay={trade=>setReplayView({mode:'historical',tradeIds:[trade.id]})} onReplayHistory={()=>setReplayView({mode:'historical'})}/>
+          }
+        </TradeRecords> : replayView ? <ReplayWorkspace key={`${replayView.mode}:${replayView.tradeIds?.join(',')??''}`} mode={replayView.mode} initialTradeIds={replayView.tradeIds} closeLabel="返回交易记录" onClose={()=>{setRecordSource('real');setReplayView({mode:'records'});}} /> : <>
         <section className="shell-panel center-panel glass" ref={centerPanelRef}>
           <header className="panel-header">
             <div>
               <strong>K 线图</strong>
-              <span>{activeData ? activeData.sourceLabel : feed.bars.length ? `${feedKind === "live" ? "实时" : "区间"} · ${session.symbol}` : "空状态 · 等待输入"}</span>
+              <span>{replayTrading.id ? `回放 · ${replayTrading.replay.session?.symbol??session.symbol}` : activeData ? activeData.sourceLabel : feed.bars.length ? `${feedHistoryAsOf ? "最近行情" : feedKind === "live" ? "实时" : "区间"} · ${session.symbol}` : liveChartConfigured ? `${feedLoading ? "加载中" : "暂无行情"} · ${session.symbol}` : "空状态 · 等待输入"}</span>
             </div>
-            <div className="panel-chips" style={{ display: "flex", flexWrap: "nowrap" }}>
+            <div className="panel-chips">
               {historyReplayActive && (
                 <span className="panel-chip-action">历史回放</span>
               )}
@@ -1901,8 +2059,7 @@ export function ReviewWorkbenchShell() {
                   onChange={(event) => {
                     const nextSymbol = event.target.value;
                     if (nextSymbol === session.symbol) return;
-                    updateSession("symbol", nextSymbol);
-                    resetCurrentChartState();
+                    replayTrading.requestLeave(()=>{updateSession("symbol", nextSymbol);resetCurrentChartState();});
                   }}
                 >
                   <option value="">选择品种</option>
@@ -1915,10 +2072,11 @@ export function ReviewWorkbenchShell() {
                 <select
                   aria-label="K 线周期切换"
                   className="panel-chip-native-select"
-                  value={session.period}
+                  value={replayTrading.id?replayTrading.replay.period:session.period}
                   onChange={(event) => {
                     const nextPeriod = event.target.value as Period;
-                    if (nextPeriod === session.period) return;
+                    if(replayTrading.id){void replayTrading.replay.changePeriod(nextPeriod);return;}
+                    if(nextPeriod === session.period)return;
                     updateSession("period", nextPeriod);
                     resetCurrentChartState();
                   }}
@@ -1932,7 +2090,7 @@ export function ReviewWorkbenchShell() {
               <span className="panel-chip-action panel-chip-action--timezone" title="K 线数据时区">{chartTimezone.label}</span>
               {feed.pollError && <span className="panel-chip-action" title={feed.pollError}>行情刷新失败</span>}
               {analysisStale && <span className="panel-chip-action" title={`结果截至 ${snapshotAsOf}`}>结果已陈旧</span>}
-              {workbenchMode === "analysis" && mode === "live" && !historyReplayActive && (
+              {workbenchMode === "analysis" && mode === "live" && !historyReplayActive && !replayTrading.id && (
                 <button
                   className="primary-action one-click-analysis"
                   disabled={loading || unavailable || feed.bars.length === 0}
@@ -1946,7 +2104,7 @@ export function ReviewWorkbenchShell() {
           </header>
 
           <div className="center-body">
-            {emptyStateVisible ? (
+            {emptyStateVisible && !replayTrading.id && !liveChartConfigured ? (
               <div className="empty-canvas">
                 <div className="empty-canvas-graphic" aria-hidden="true">
                   <i />
@@ -1961,18 +2119,33 @@ export function ReviewWorkbenchShell() {
             ) : (
               <>
                 <div className="chart-card">
+                  {liveChartConfigured && !replayTrading.id && (feedHistoryAsOf || emptyStateVisible) && (
+                    <p className="chart-stale-hint" role="status">
+                      {feedHistoryAsOf
+                        ? `当前时段暂无新行情，显示最近已有行情 · 最新 K 线 ${formatChartTime(Date.parse(feedHistoryAsOf) / 1000, CHART_TIMEZONE.offsetMinutes, "full")}（${CHART_TIMEZONE.label}）`
+                        : feedLoading ? "正在加载行情…" : feed.pollError ? `行情加载失败：${feed.pollError}` : "当前时段暂无行情，可选择历史时间进入回放。"}
+                      {emptyStateVisible && !feedLoading && <button type="button" onClick={() => setFeedRefresh(value => value + 1)}>重新加载行情</button>}
+                    </p>
+                  )}
                   {analysisStale && (
                     <p className="chart-stale-hint" role="status">
                       分析基于 {snapshotAsOf} 的切片；图表已有更新的已收盘 K 线。再次点击分析才会重跑模型。
                     </p>
                   )}
-                  <TradingChart
+                  <ChartReplayTrading
+                    controller={replayTrading}
+                    symbol={session.symbol}
                     bars={chartBars}
                     chartKey={chartKey}
                     locked={chartLocked}
                     markers={activeData?.tradeMarkers}
                     onNeedHistory={loadMoreHistory}
                     onNeedFuture={loadMoreFuture}
+                    onReplayLoad={async (start, end, signal) => {
+                      if (!session.symbol || !session.period) return [];
+                      const market = await getMarketBars(session.symbol, session.period as Period, start, end, signal, false, "history_prefetch");
+                      return market.bars;
+                    }}
                     onRangeSelected={useVisibleRange}
                     onPeriodChange={(nextPeriod) => {
                       updateSession("period", nextPeriod);
@@ -2039,7 +2212,7 @@ export function ReviewWorkbenchShell() {
                 </header>
                 {activeData?.stage2?.terminal.reason || activeData?.stage2?.decision.entry_reason || activeData?.notes?.length ? (
                   <div className="llm-readable">
-                    <strong>【分析结论】</strong>
+                    <strong>分析结论</strong>
                     {activeData.stage2?.terminal.reason ? <p>{activeData.stage2.terminal.reason}</p> : null}
                     {activeData.stage2?.decision.entry_reason && activeData.stage2.decision.entry_reason !== activeData.stage2.terminal.reason ? (
                       <p>{activeData.stage2.decision.entry_reason}</p>
@@ -2268,6 +2441,7 @@ export function ReviewWorkbenchShell() {
           </div>
         </aside>
 
+        </>}
       </section>
 
       {taskComposer && (
@@ -2438,17 +2612,6 @@ export function ReviewWorkbenchShell() {
 
       {loginOpen && <div className="modal-backdrop"><form aria-label="登录" aria-modal="true" className="login-modal" onSubmit={submitLogin} ref={loginDialogRef as React.RefObject<HTMLFormElement | null>} role="dialog"><header><strong>登录 PA</strong><span>交易数据与管理功能受保护</span></header><label>用户名<input autoComplete="username" onChange={(event) => setLoginName(event.target.value)} required value={loginName} /></label><label>密码<input autoComplete="current-password" minLength={8} onChange={(event) => setLoginPassword(event.target.value)} required type="password" value={loginPassword} /></label><button className="primary-action" disabled={loading} type="submit">登录</button></form></div>}
 
-      {journalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={() => setJournalOpen(false)}><section aria-label="交易日志" aria-modal="true" className="history-modal journal-modal" ref={journalDialogRef} role="dialog" onMouseDown={(event) => event.stopPropagation()}>
-        <header><div><strong>交易日志</strong><span>维护、检索并进入复盘</span></div><button aria-label="关闭" onClick={() => setJournalOpen(false)} type="button">×</button></header>
-        <div className="history-toolbar">
-          <input aria-label="搜索交易日志" onChange={(event) => setJournalQuery(event.target.value)} placeholder="搜索合约、策略、账户、标签或笔记" value={journalQuery} />
-          <button disabled={loading} onClick={() => fileInputRef.current?.click()} type="button">导入 Excel / CSV</button>
-          <button onClick={() => void addManualTrade()} type="button">手工新增</button>
-        </div>
-        <div className="history-list">{availableTrades.filter((trade) => `${trade.contract_name} ${trade.strategy ?? ""} ${trade.account ?? ""} ${(trade.tags ?? []).join(" ")} ${trade.notes ?? ""}`.toLowerCase().includes(journalQuery.toLowerCase())).map((trade) => <article key={trade.id}><div><strong>{trade.contract_name} · {trade.direction === "long" ? "多" : "空"}</strong><small>{formatDate(trade.entered_at)} → {formatDate(trade.exited_at)} · {trade.entry_price} → {trade.exit_price}</small><p>{trade.strategy || "未标记策略"} · {trade.notes || "暂无笔记"}</p></div><div><button onClick={() => { syncReviewSessionFromTrades([trade.id]); setJournalOpen(false); setWorkbenchMode("review"); setMode("historical"); }} type="button">复盘</button><button onClick={() => void editJournalTrade(trade)} type="button">编辑</button><button onClick={() => void removeJournalTrade(trade)} type="button">删除</button></div></article>)}</div>
-        {tradeImports.length > 0 && <section className="import-history"><strong>导入历史</strong>{tradeImports.map((batch) => <article key={batch.id}><span>{batch.file_name} · {formatDate(batch.created_at)}</span><small>导入 {batch.imported_rows} · 重复 {batch.skipped_duplicates} · 异常 {batch.invalid_rows}</small>{batch.errors.slice(0, 3).map((error) => <em key={`${error.row}-${error.message}`}>第 {error.row} 行：{error.message}</em>)}</article>)}</section>}
-      </section></div>}
-
       {orderPickerOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setOrderPickerOpen(false)}>
           <section aria-label="选择交易记录" aria-modal="true" className="trade-modal" ref={orderPickerDialogRef} role="dialog" onMouseDown={(event) => event.stopPropagation()}>
@@ -2560,30 +2723,20 @@ export function ReviewWorkbenchShell() {
       )}
 
       {adminOpen && orchestration && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setAdminOpen(false)}>
-          <section aria-label="管理后台" aria-modal="true" className="admin-modal" ref={adminDialogRef} role="dialog" onMouseDown={(event) => event.stopPropagation()}>
-            <header><div><strong>阶段分析管理后台</strong><span>编排流程 · Stage 文本 · 在线编辑</span></div><button aria-label="关闭" onClick={() => setAdminOpen(false)} type="button">×</button></header>
-            <div className="admin-layout">
-              <aside className="pipeline-browser">
-                <div className="pipeline-title"><strong>分析编排</strong><span>{orchestration.stages.length} 个节点</span></div>
-                {orchestration.stages.map((stage, index) => <article className={`pipeline-stage kind-${stage.kind}`} key={stage.id}>
-                  <header><span className="stage-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{stage.name}</strong><small>{stage.description}</small></div><span className="stage-basis-badge">{stageBasisLabel(stage)}</span></header>
-                  <div className="stage-basis">
-                    <strong>依据</strong>
-                    <ul>{buildNodeBasis(stage).map((item) => <li key={item}>{item}</li>)}</ul>
-                  </div>
-                  {stage.prompt_files.length ? <div className="stage-files">{stage.prompt_files.map((file) => <button className={promptDocument?.filename === file.filename ? "active" : ""} key={`${stage.id}-${file.filename}`} onClick={() => void selectPromptFile(file.filename)} title={file.condition} type="button"><span>{file.filename}</span><small>{file.placement} · {file.condition}</small></button>)}</div> : <p>该节点不加载文本</p>}
-                </article>)}
-              </aside>
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeKnowledge}>
+          <section aria-label="个人知识库" aria-modal="true" className="admin-modal" ref={adminDialogRef} role="dialog" onMouseDown={(event) => event.stopPropagation()}>
+            <header><div><strong>个人知识库</strong><span>数据库提示词 · 本人独立 · 版本管理</span></div><div className="knowledge-header-actions"><div aria-label="知识库视图" className="knowledge-view-switch"><button aria-pressed={knowledgeView === "editor"} className={knowledgeView === "editor" ? "active" : ""} onClick={() => setKnowledgeView("editor")} type="button">提示词编辑</button><button aria-pressed={knowledgeView === "guide"} className={knowledgeView === "guide" ? "active" : ""} onClick={() => setKnowledgeView("guide")} type="button">阶段与加载说明</button></div><button aria-label="关闭" onClick={closeKnowledge} type="button">×</button></div></header>
+            {knowledgeView === "guide" ? <KnowledgeStageGuide view={orchestration} /> : <div className="admin-layout">
+              <KnowledgePromptBrowser view={orchestration} selectedFilename={promptDocument?.filename ?? null} busy={knowledgeBusy} onSelect={filename => void selectPromptFile(filename)} />
               <section className="prompt-editor">
                 {promptDocument ? <>
-                  <header><div><strong>{promptDocument.filename}</strong><span>{promptDocument.size.toLocaleString()} bytes · version {promptDocument.version}</span></div><div><button onClick={() => void getPromptVersions(promptDocument.filename).then(setPromptVersions)} type="button">查看版本</button><span className="editor-status">在线编辑</span></div></header>
-                  <textarea aria-label="提示词文本内容" spellCheck={false} value={promptDocument.content} onChange={(event) => setPromptDocument({ ...promptDocument, content: event.target.value })} />
+                  <header><div><strong>{promptDocument.filename}</strong><span>{promptDocument.source === "default" ? "默认模板" : "个人版本"} · 第 {promptDocument.revision} 版 · {promptDocument.size.toLocaleString()} bytes</span></div><div><button disabled={knowledgeBusy} onClick={() => void loadKnowledgeVersions()} type="button">查看版本</button><span className="editor-status">在线编辑</span></div></header>
+                  <textarea disabled={knowledgeBusy} aria-label="提示词文本内容" spellCheck={false} value={promptDocument.content} onChange={(event) => setPromptDocument({ ...promptDocument, content: event.target.value })} />
                 </> : <div className="prompt-empty">选择左侧文本开始编辑</div>}
-                {promptVersions.length > 0 && <div className="prompt-history"><strong>版本历史</strong>{promptVersions.map((version) => <article key={version.id}><span>{formatDate(version.created_at)} · {version.actor} · {version.action}</span><code>{version.version}</code><button onClick={() => void restorePromptVersion(version)} type="button">回滚</button></article>)}</div>}
+                {promptVersions.length > 0 && <div className="prompt-history"><strong>版本历史</strong>{promptVersions.map((version) => <article key={version.id}><span>{formatDate(version.created_at)} · {version.actor} · {version.action}</span><code>第 {version.revision} 版</code><button disabled={knowledgeBusy || !version.can_rollback} onClick={() => void restoreKnowledgeVersion(version)} type="button">回滚</button></article>)}{versionsBefore !== null && <button disabled={knowledgeBusy} onClick={() => void loadKnowledgeVersions(true)} type="button">加载更多版本</button>}</div>}
               </section>
-            </div>
-            <footer><span>{adminNotice ?? "修改会影响后续 Stage 分析，请确认后保存。"}</span><button className="primary-action" disabled={loading || !promptDocument} onClick={() => void savePromptDocument()} type="button">保存文本</button></footer>
+            </div>}
+            <footer className={knowledgeView === "guide" ? "knowledge-guide-footer" : undefined}><span>{knowledgeView === "guide" ? "切回编辑时，未保存的草稿会保留。" : adminNotice ?? "修改保存在数据库，仅影响自己的后续分析；正在运行的分析保持原版本。"}</span>{knowledgeView === "guide" ? <button className="primary-action" onClick={() => setKnowledgeView("editor")} type="button">返回编辑</button> : <button className="primary-action" disabled={knowledgeBusy || !promptDocument} onClick={() => void savePromptDocument()} type="button">保存文本</button>}</footer>
           </section>
         </div>
       )}

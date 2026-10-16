@@ -19,6 +19,29 @@ def disable_real_llm(monkeypatch):
     monkeypatch.setattr("app.analysis.workflow.graph.call_llm", no_model)
 
 
+@pytest.fixture(autouse=True)
+def isolated_prompt_knowledge(tmp_path, monkeypatch):
+    import anyio
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from app.core.database import Base
+    from app.knowledge.repository import KnowledgeRepository
+    from app.knowledge.service import KnowledgeService
+    from app.analysis.workflow.stage1.core.compat import PROMPT_DIR
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'prompts.db'}")
+    service = KnowledgeService(KnowledgeRepository(async_sessionmaker(engine, expire_on_commit=False)))
+    async def prepare():
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        await service.import_default_prompts(PROMPT_DIR)
+    anyio.run(prepare)
+    monkeypatch.setattr("app.main.get_or_create_run_prompt_snapshot", service.get_or_create_run_prompt_snapshot)
+    monkeypatch.setattr("app.main.resolve_prompt_snapshot", service.resolve_prompt_snapshot)
+    try:
+        yield
+    finally:
+        anyio.run(engine.dispose)
+
+
 class StubProvider:
     async def get_range(self, query):
         return [
@@ -214,6 +237,7 @@ def test_unhandled_error_contains_trace_id(monkeypatch) -> None:
         raise RuntimeError("boom")
 
     monkeypatch.setattr("app.main.query_market_range", fail_query)
+    monkeypatch.setitem(app.dependency_overrides, get_provider, StubProvider)
     response = TestClient(app, raise_server_exceptions=False).get(
         "/api/v1/market/bars",
         params={"symbol": "ES", "period": "5m", "start": "2026-08-18T00:00:00Z", "end": "2026-08-18T01:00:00Z"},

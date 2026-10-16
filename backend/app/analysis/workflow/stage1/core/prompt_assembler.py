@@ -6,8 +6,13 @@ import functools
 import json
 import logging
 import math
+from collections.abc import Mapping
+from hashlib import sha256
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
+
+from app.core.errors import AppError
 
 from app.analysis.workflow.stage1.core.compat import AnalysisRecord, build_decision_stance_guidance, format_epoch_for_display, normalize_stance
 from app.analysis.workflow.stage1.core.pattern_routing import (
@@ -898,7 +903,9 @@ class PromptAssembler:
         experience_reader: Any = None,
         *,
         prompt_settings: Any = None,
+        prompt_contents: Mapping[str, str] | None = None,
     ) -> None:
+        self._prompt_contents = MappingProxyType(dict(prompt_contents)) if prompt_contents is not None else None
         self._prompt_dir = prompt_dir
         self._experience_reader = experience_reader
         self._prompt_settings = prompt_settings
@@ -922,11 +929,19 @@ class PromptAssembler:
         return self._get_shared_system_prompt()
 
     def _get_shared_system_prompt(self) -> str:
-        key = str(self._prompt_dir.resolve())
+        if self._prompt_contents is None:
+            key = str(self._prompt_dir.resolve())
+        else:
+            # Include fixed program prefixes and ordered system content in the key.
+            parts = [_LANGUAGE_ZH_RULE, _PA_TERMINOLOGY_ZH, _OPENCLAW_AGENT_NO_TOOLS_RULE,
+                     _THINKING_CONTENT_OUTPUT_RULE, *(self._load(name) for name in COMMON_SYSTEM_PROMPT_TXT_FILES)]
+            key = "knowledge:" + sha256(json.dumps(parts, ensure_ascii=False).encode("utf-8")).hexdigest()
         cached = _SYSTEM_PROMPT_CACHE.get(key)
         if cached is not None:
             return cached
         built = self._build_shared_system_prompt_inner()
+        if len(_SYSTEM_PROMPT_CACHE) >= 64:
+            _SYSTEM_PROMPT_CACHE.pop(next(iter(_SYSTEM_PROMPT_CACHE)))
         _SYSTEM_PROMPT_CACHE[key] = built
         return built
 
@@ -955,6 +970,11 @@ class PromptAssembler:
         """Load a prompt file by name. Returns empty string on error."""
         if filename in self._txt_cache:
             return self._txt_cache[filename]
+        if self._prompt_contents is not None:
+            if filename not in self._prompt_contents:
+                raise AppError("knowledge_prompt_missing", "运行快照缺少提示词", 503,
+                               [{"filename": filename}])
+            return self._prompt_contents[filename]
         path = self._prompt_dir / filename
         try:
             content = path.read_text(encoding="utf-8")

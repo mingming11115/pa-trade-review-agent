@@ -577,14 +577,17 @@ async def _stream_openai_compatible_with_tools(
     When the model emits ``tool_calls`` alongside (or instead of) text, this
     function collects the call deltas, executes each tool via the shared
     registry, appends the results as ``role=tool`` messages, and re-streams.
-    Up to ``_MAX_TOOL_ROUNDS`` rounds are allowed before bailing out.
+    Up to ``_MAX_TOOL_ROUNDS`` tool rounds are followed by one answer-only
+    request. Streamed text remains provisional until a nonempty answer finishes
+    with a normal stop; incomplete responses must not be persisted as success.
     """
     from app.llm.tools import execute_llm_tool, list_llm_tools
 
     tools = list_llm_tools()
     current_messages = list(payload_messages)
 
-    for _round in range(_MAX_TOOL_ROUNDS):
+    for _round in range(_MAX_TOOL_ROUNDS + 1):
+        answer_only = _round == _MAX_TOOL_ROUNDS
         content_parts: list[str] = []
         tool_calls_by_index: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
@@ -599,7 +602,7 @@ async def _stream_openai_compatible_with_tools(
                     "messages": current_messages,
                     "temperature": 0.2,
                     "stream": True,
-                    **({"tools": tools, "tool_choice": "auto"} if tools else {}),
+                    **({"tools": tools, "tool_choice": "none" if answer_only else "auto"} if tools else {}),
                 },
             ) as response:
                 if response.status_code >= 400:
@@ -645,7 +648,19 @@ async def _stream_openai_compatible_with_tools(
                             acc["function"]["arguments"] += fn["arguments"]
 
         if not tool_calls_by_index:
+            if finish_reason != "stop":
+                raise AppError("llm_incomplete_response", "模型回答未完整结束，请重试", 502)
+            if not "".join(content_parts).strip():
+                raise AppError("llm_empty_reply", "模型未生成最终回答，请重试", 502)
             return
+
+        if answer_only:
+            logger.warning("stream_chat tool budget exhausted rounds=%d", _MAX_TOOL_ROUNDS)
+            raise AppError(
+                "llm_tool_budget_exhausted",
+                "工具调用次数已达上限，助手未能生成最终回答，请缩小问题范围后重试",
+                502,
+            )
 
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts) or None}
         assistant_msg["tool_calls"] = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)]
@@ -666,8 +681,6 @@ async def _stream_openai_compatible_with_tools(
                 "name": fn_name,
                 "content": json.dumps(result, ensure_ascii=False),
             })
-
-    logger.warning("stream_chat exceeded %d tool rounds, stopping", _MAX_TOOL_ROUNDS)
 
 
 async def stream_chat(messages: list[dict[str, str]]) -> AsyncIterator[str]:

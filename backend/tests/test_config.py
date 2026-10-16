@@ -1,13 +1,13 @@
 from app.core.config import get_settings
 
 
-def test_collector_only_allows_es_and_nq(monkeypatch):
-    monkeypatch.setenv("COLLECTOR_SYMBOLS", "ES,MES,NQ,GC")
+def test_collector_allows_five_roots_but_not_parent_gold(monkeypatch):
+    monkeypatch.setenv("COLLECTOR_SYMBOLS", "ES,MES,NQ,MNQ,MGC,GC")
     get_settings.cache_clear()
 
     settings = get_settings()
 
-    assert settings.collector_symbols == ("ES", "NQ")
+    assert settings.collector_symbols == ("ES", "MES", "NQ", "MNQ", "MGC")
     get_settings.cache_clear()
 
 

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.pa.market-collector</string>
+<key>ProgramArguments</key><array><string>@PYTHON@</string><string>-m</string><string>app.market.worker</string></array>
+<key>WorkingDirectory</key><string>@PROJECT_ROOT@/backend</string>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>15</integer>
+<key>EnvironmentVariables</key><dict><key>PYTHONUNBUFFERED</key><string>1</string><key>COLLECTOR_MODE</key><string>external</string></dict>
+<key>StandardOutPath</key><string>@LOG_DIR@/collector.stdout.log</string>
+<key>StandardErrorPath</key><string>@LOG_DIR@/collector.stderr.log</string>
+</dict></plist>

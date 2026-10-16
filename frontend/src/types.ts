@@ -71,7 +71,7 @@ export type AnalysisTaskStatus = "pending" | "running" | "completed" | "complete
 
 export interface AnalysisTask {
   id: string;
-  kind: "analysis" | "review";
+  kind: "analysis" | "review" | "replay_review";
   title: string;
   description: string;
   status: AnalysisTaskStatus;
@@ -130,7 +130,11 @@ export interface AnalysisRunDetail {
   terminal_outcome: string;
   created_at: string;
   updated_at: string;
-  result: DemoAnalysisResponse | ReviewExecutionResult;
+  failure_stage?: string | null;
+  failure_code?: string | null;
+  failure_message?: string | null;
+  terminal_reason?: string | null;
+  result: Partial<DemoAnalysisResponse> | ReviewExecutionResult | null;
 }
 export interface ReviewExecutionResult {
   query: { analysis_mode: "trade_review"; symbol: string; period: string };
@@ -148,6 +152,44 @@ export interface AnalysisState {
   stage2?: Stage2Result;
   result?: DemoAnalysisResponse;
   error?: ApiError | null;
+}
+
+export type ReplayMode = 'training' | 'historical';
+export interface ReplayOrder {
+  id: string; side: 'buy'|'sell'; quantity: number; kind: 'market'|'limit'|'stop_market'|'stop_limit'; limit_price: string|null;
+  stop_price?:string|null; triggered_at?:string|null; stop_loss: string|null; take_profit: string|null; reduce_only: boolean; created_at: string;
+  status: 'pending'|'filled'|'cancelled'; reason: string;
+}
+export interface ReplayFill {
+  order_id: string; timestamp: string; side: 'buy'|'sell'; quantity: number; price: string; fee: string;
+  reason: string; ambiguous: boolean; realized_pnl: string;
+}
+export interface ReplaySession {
+  id: string; mode: ReplayMode; symbol: string; status: 'active'|'completed'|'abandoned'; revision: number; created_at: string;
+  config: {instrument:{symbol:string; tick_size:string; multiplier:string}; rules_version:number; start:string; end:string|null};
+  state: {cursor:string; last_price:string|null; instrument_id:number; config:{initial_cash:string;fee_per_side:string;slippage_ticks:number;profit_target?:string|null;loss_limit?:string|null};
+    position:{quantity:number;average_price:string;entry_fees:string;stop_loss:string|null;take_profit:string|null};
+    account:{cash:string;realized_pnl:string;fees:string;unrealized_pnl:string;equity:string;peak_equity:string;max_drawdown:string;closed_trades:number;wins:number;profit_target_reached?:boolean;loss_limit_reached?:boolean};
+    orders:ReplayOrder[]};
+}
+export interface ReplayCommandInput {
+  type:'advance'|'place_order'|'amend_order'|'cancel_order'|'update_protection'|'finish'|'abandon'|'seek';
+  period?:Period;
+  order_id?:string;side?:'buy'|'sell';kind?:'market'|'limit'|'stop_market'|'stop_limit';quantity?:number;limit_price?:string|null;
+  stop_price?:string|null; stop_loss?:string|null;take_profit?:string|null;reduce_only?:boolean;cursor?:string;target?:'previous'|'next';
+}
+export interface ReplayCreate {
+  mode:ReplayMode;symbol:string;start?:string;end?:string;random_start?:boolean;trade_ids?:string[];
+  config?:{initial_cash:string;fee_per_side:string;slippage_ticks:number;profit_target?:string|null;loss_limit?:string|null};
+}
+export interface HistoricalReplayEvent {
+  id:string;type:'entry'|'exit';timestamp:string;price:string;direction:'long'|'short';size:string;
+  contract_name:string;pnl?:string;estimated?:boolean;
+}
+export interface ReplayEvents {
+  items:Array<{revision:number;type:string;cursor:string;equity:string;fills:ReplayFill[]} | HistoricalReplayEvent>;
+  next_offset:number|null;
+  history?:{quantity:string;realized_pnl:string;unrealized_pnl:string;open_trades:HistoricalReplayEvent[]};
 }
 
 export interface TradeMarker {
@@ -462,3 +504,14 @@ export interface Trade extends TradeRow {
   notes?: string;
   attachments?: string[];
 }
+
+export interface KnowledgeDocument extends PromptFileDocument {
+  source: "default" | "personal";
+  revision: number;
+}
+export interface KnowledgeVersion {
+  id: string; revision: number; actor: string; action: string; created_at: string; can_rollback: boolean;
+}
+export interface KnowledgeVersionPage { items: KnowledgeVersion[]; next_before_revision: number | null; }
+
+export interface SavedReplay { id:string; name:string; created_at:string; source_revision:number; session:ReplaySession; events:ReplayEvents["items"]; }

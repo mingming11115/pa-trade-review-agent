@@ -1,0 +1,18 @@
+.indicator-legends { position:absolute; inset:0; pointer-events:none; z-index:4; font-size:12px; }
+.indicator-legend-pane { position:absolute; left:10px; overflow:auto; scrollbar-width:thin; }
+.indicator-legend-row { display:flex; align-items:center; gap:10px; min-height:25px; width:max-content; max-width:100%; border:1px solid transparent; border-radius:4px; padding:0 4px; pointer-events:auto; background:rgba(255,255,255,.88); }
+.indicator-legend-row:hover, .indicator-legend-row:focus-within { border-color:#d4d9e2; background:#fff; }
+/* Keep replay's generic ticket-button padding out of compact legend controls. */
+.indicator-legends .indicator-legend-row button { appearance:none; border:0; border-radius:3px; background:transparent; box-shadow:none; padding:0; min-height:0; height:22px; color:#5a6473; font-size:12px; line-height:1; cursor:pointer; }
+.indicator-legends button:hover { background:#edf0f5; color:#202734; }
+.indicator-legends button:focus-visible { outline:2px solid #2962ff; outline-offset:1px; }
+.indicator-legend-name { white-space:nowrap; flex-shrink:0; font-weight:600; }
+.indicator-legend-name span { margin-left:4px; font-weight:400; color:#8a929f; }
+.indicator-legend-values { display:flex; gap:9px; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; }
+.indicator-legend-actions { display:flex; gap:2px; opacity:0; flex-shrink:0; margin-left:auto; }
+.indicator-legend-actions button { display:grid; place-items:center; width:24px; }
+.indicator-legend-row:hover .indicator-legend-actions, .indicator-legend-row:focus-within .indicator-legend-actions { opacity:1; }
+.indicator-legend-row.is-hidden .indicator-legend-name { color:#9299a4; }
+.indicator-legend-hidden { color:#a1a8b2; font-size:11px; }
+.indicator-legends .indicator-legend-collapse { border:1px solid #dbe0e7; width:auto; min-width:23px; padding:0 5px; height:20px; margin:3px 0 0 4px; pointer-events:auto; background:#fffffff2; }
+@media (hover:none), (max-width:680px) { .indicator-legend-actions { opacity:1; } .indicator-legend-row { gap:6px; } .indicator-legend-values { gap:5px; } }

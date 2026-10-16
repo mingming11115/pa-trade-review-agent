@@ -1,5 +1,8 @@
 import type {
+  ReplaySession, ReplayCreate, ReplayMode, ReplayCommandInput, ReplayEvents,
   ApiError,
+  KnowledgeDocument,
+  KnowledgeVersionPage,
   DemoAnalysisResponse,
   HealthResponse,
   HistoricalQuery,
@@ -68,6 +71,27 @@ async function parseResponse<T>(response: Response): Promise<T> {
 
 export async function getHealth(): Promise<HealthResponse> {
   return parseResponse<HealthResponse>(await apiFetch("/api/v1/health"));
+}
+
+export async function listReplaySessions(mode: ReplayMode, offset = 0, signal?: AbortSignal): Promise<{items:ReplaySession[]}> {
+  return parseResponse(await apiFetch(`/api/v1/replay/sessions?mode=${mode}&offset=${offset}`, {signal}));
+}
+export async function createReplaySession(payload:ReplayCreate, signal?:AbortSignal):Promise<ReplaySession> {
+  return parseResponse(await apiFetch('/api/v1/replay/sessions', {method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}));
+}
+export async function getReplaySession(id:string, signal?:AbortSignal):Promise<ReplaySession> {
+  return parseResponse(await apiFetch(`/api/v1/replay/sessions/${encodeURIComponent(id)}`, {signal}));
+}
+export async function getReplayBars(id:string, period:Period, cursor?:string, signal?:AbortSignal, limit=500):Promise<{bars:Bar[]}> {
+  const params = new URLSearchParams({period,limit:String(limit)});
+  if(cursor) params.set('cursor',cursor);
+  return parseResponse(await apiFetch(`/api/v1/replay/sessions/${encodeURIComponent(id)}/bars?${params}`, {signal}));
+}
+export async function getReplayEvents(id:string, offset=0, signal?:AbortSignal):Promise<ReplayEvents> {
+  return parseResponse(await apiFetch(`/api/v1/replay/sessions/${encodeURIComponent(id)}/events?offset=${offset}`, {signal}));
+}
+export async function sendReplayCommand(id:string, payload:ReplayCommandInput & {operation_id:string;expected_revision:number}, signal?:AbortSignal):Promise<ReplaySession> {
+  return parseResponse(await apiFetch(`/api/v1/replay/sessions/${encodeURIComponent(id)}/commands`, {method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}));
 }
 
 export async function getMarketBars(
@@ -264,7 +288,7 @@ export async function getAnalysisDetail(runId: string): Promise<DemoAnalysisResp
 }
 
 
-export async function getCollectionStatus(): Promise<CollectionStatus[]> { return parseResponse<CollectionStatus[]>(await apiFetch("/api/v1/market/status")); }
+export async function getCollectionStatus(signal?: AbortSignal): Promise<CollectionStatus[]> { return parseResponse<CollectionStatus[]>(await apiFetch("/api/v1/market/status", { signal })); }
 export async function getAlertRules(): Promise<AlertRule[]> { return parseResponse(await apiFetch("/api/v1/alert-rules")); }
 export async function saveAlertRule(rule: Omit<AlertRule, "id" | "last_run_at" | "created_at" | "updated_at">, id?: string): Promise<AlertRule> { return parseResponse(await apiFetch(id ? `/api/v1/alert-rules/${id}` : "/api/v1/alert-rules", { method: id ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(rule) })); }
 export async function removeAlertRule(id: string): Promise<void> { const response = await apiFetch(`/api/v1/alert-rules/${id}`, { method: "DELETE" }); if (!response.ok) throw withResponseTrace(await response.json() as ApiError, response); }
@@ -310,4 +334,58 @@ export async function sendFollowupStream(
 
 export async function getFollowupHistory(runId: string): Promise<FollowupMessage[]> {
   return parseResponse(await apiFetch(`/api/v1/analyses/${encodeURIComponent(runId)}/followup/history`));
+}
+
+export async function getKnowledgeOrchestration(): Promise<OrchestrationView> {
+  return parseResponse(await apiFetch("/api/v1/knowledge/orchestration"));
+}
+export async function getKnowledgePrompt(filename: string): Promise<KnowledgeDocument> {
+  return parseResponse(await apiFetch(`/api/v1/knowledge/prompt?${new URLSearchParams({ filename })}`));
+}
+export async function saveKnowledgePrompt(document: KnowledgeDocument): Promise<KnowledgeDocument> {
+  return parseResponse(await apiFetch(`/api/v1/knowledge/prompt?${new URLSearchParams({ filename: document.filename })}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: document.content, expected_version: document.version }),
+  }));
+}
+export async function getKnowledgeVersions(filename: string, beforeRevision?: number): Promise<KnowledgeVersionPage> {
+  const params = new URLSearchParams({ filename });
+  if (beforeRevision !== undefined) params.set("before_revision", String(beforeRevision));
+  return parseResponse(await apiFetch(`/api/v1/knowledge/versions?${params}`));
+}
+export async function rollbackKnowledgeVersion(document: KnowledgeDocument, versionId: string): Promise<KnowledgeDocument> {
+  return parseResponse(await apiFetch(`/api/v1/knowledge/versions/${versionId}/rollback?${new URLSearchParams({ filename: document.filename })}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_version: document.version }),
+  }));
+}
+
+export async function listSavedReplays(offset=0):Promise<{items:import('./types').SavedReplay[]}> {
+ return parseResponse(await apiFetch(`/api/v1/replay/saved?offset=${offset}`));
+}
+export async function getSavedReplay(id:string):Promise<import('./types').SavedReplay> {
+ return parseResponse(await apiFetch(`/api/v1/replay/saved/${encodeURIComponent(id)}`));
+}
+export async function listReplayDrafts():Promise<{items:import('./types').ReplaySession[]}> {
+ return parseResponse(await apiFetch('/api/v1/replay/drafts'));
+}
+export async function saveReplay(id:string,name:string,operation_id:string,expected_revision:number):Promise<import('./types').SavedReplay> {
+ return parseResponse(await apiFetch(`/api/v1/replay/sessions/${encodeURIComponent(id)}/save`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,operation_id,expected_revision})}));
+}
+export async function discardReplay(id:string,expected_revision:number):Promise<{ok:boolean}> {
+ return parseResponse(await apiFetch(`/api/v1/replay/sessions/${encodeURIComponent(id)}/discard`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision})}));
+}
+export async function resumeReplay(id:string,operation_id:string):Promise<import('./types').ReplaySession> {
+ return parseResponse(await apiFetch(`/api/v1/replay/saved/${encodeURIComponent(id)}/resume`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation_id})}));
+}
+
+export interface ReplayAnalysisLink {task_id:string;runs:Array<{run_id:string;period:string;status:string}>;}
+export async function analyzeSavedReplay(id:string,operation_id:string,periods:string[]):Promise<ReplayAnalysisLink> {
+ return parseResponse(await apiFetch(`/api/v1/replay/saved/${encodeURIComponent(id)}/analysis`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation_id,periods})}));
+}
+export async function getSavedReplayAnalyses(id:string):Promise<{items:ReplayAnalysisLink[]}> {
+ return parseResponse(await apiFetch(`/api/v1/replay/saved/${encodeURIComponent(id)}/analysis`));
+}
+
+export async function listLegacyReplays(offset=0):Promise<{items:import('./types').ReplaySession[]}> {
+ return parseResponse(await apiFetch(`/api/v1/replay/legacy?offset=${offset}`));
 }

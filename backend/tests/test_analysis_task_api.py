@@ -150,3 +150,32 @@ def test_start_task_returns_flat_run_items_and_starts_each_run(monkeypatch) -> N
     assert result[0].period == "5m"
     assert result[0].status == "queued"
     assert manager.started == [result[0].run_id]
+
+
+def test_run_detail_exposes_terminal_failure_metadata() -> None:
+    from app.analysis.routes import get_analysis_run
+
+    run_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    run = SimpleNamespace(
+        id=run_id, task_id=uuid.uuid4(), status="failed", mode="realtime", symbol="ES",
+        period="5m", direction="neutral", terminal_outcome="failed", created_at=now,
+        updated_at=now, failure_stage="stage1", failure_code="llm_unavailable",
+        failure_message="模型暂不可用", terminal_reason="llm_unavailable",
+    )
+
+    class Repository:
+        async def get_run(self, owner_id, requested_id):
+            return run
+
+        async def get_run_detail(self, owner_id, requested_id):
+            return {"bars": [], "llm_transcript": {}}
+
+    async def exercise():
+        return await get_analysis_run(run_id, SimpleNamespace(id=uuid.uuid4()), Repository())
+
+    payload = anyio.run(exercise).model_dump()
+    assert payload["failure_code"] == "llm_unavailable"
+    assert payload["failure_message"] == "模型暂不可用"
+    assert payload["failure_stage"] == "stage1"
+    assert payload["terminal_reason"] == "llm_unavailable"

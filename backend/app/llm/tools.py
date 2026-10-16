@@ -22,12 +22,14 @@ from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.core.errors import AppError
+from app.core.user_context import get_current_user_id
 from app.core.models import HistoricalQuery, Period
 from app.market.provider import MassiveHistoricalProvider
 from app.market.service import (
     LocalFirstMarketProvider,
     PERIOD_MINUTES,
     collection_statuses,
+    closed_boundary,
     query_market_range,
     validate_kline_symbol,
 )
@@ -232,7 +234,7 @@ class MarketGetLatestBarsTool(LLMTool):
         period = parsed.period
         period_minutes = PERIOD_MINUTES[period.value]
         now = datetime.now(UTC)
-        end = now - timedelta(minutes=period_minutes)
+        end = closed_boundary(now, period.value)
         start = end - timedelta(minutes=period_minutes * parsed.count)
 
         provider = _provider()
@@ -248,6 +250,7 @@ class MarketGetLatestBarsTool(LLMTool):
             period.value,
             start,
             end,
+            now=now,
         )
         bars = market.bars[-parsed.count:] if len(market.bars) > parsed.count else market.bars
         return {
@@ -448,6 +451,7 @@ class AnalysisListHistoryTool(LLMTool):
             period=parsed.period,
             mode=parsed.mode,
             favorite=parsed.favorite,
+            user_id=get_current_user_id(),
         )
         return {
             "tool": self.name,
@@ -490,7 +494,7 @@ class AnalysisGetDetailTool(LLMTool):
         run_id = str(arguments.get("run_id") or "").strip()
         if not run_id:
             raise AppError("llm_tool_arguments_invalid", "run_id 不能为空", 422)
-        result = await get_analysis_history(run_id)
+        result = await get_analysis_history(run_id, user_id=get_current_user_id())
         return {
             "tool": self.name,
             "run_id": run_id,

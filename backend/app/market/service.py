@@ -16,31 +16,28 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, Text, UniqueConstraint, delete, select
+from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, Text, UniqueConstraint, delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.config import KLINE_SYMBOLS, Settings, get_settings
-from app.core.database import Base, SessionFactory, ensure_schema
+from app.core.database import Base, SessionFactory, ensure_schema, engine
 from app.core.models import Bar, HistoricalQuery, Period
 from app.analysis.workflow.stage1.core.bar_identity import enrich_api_bars
 from app.market.provider import MassiveHistoricalProvider
 from app.core.errors import ProviderError
-from app.core.logging_context import get_request_id
+from app.core.logging_context import get_request_id, set_trace_context, reset_trace_context, bind_trace_fields
 
 
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
+COLLECTOR_LOCK_ID = 724019222
+HISTORICAL_BACKFILL_TIMEOUT_SECONDS = 120
 STORED_PERIODS = {"1m", "1h"}
 PERIOD_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
 # 与前端 feed.ANALYSIS_LOOKBACK_BARS 保持一致，用于实时快照回看窗口。
 ANALYSIS_LOOKBACK_BARS = 80
-SOURCE_PERIOD = {"1m": "1m", "5m": "1m", "15m": "1m", "30m": "1m", "1h": "1m", "4h": "1h", "1d": "1h"}
-# 微型合约与父指数共享同一价格序列，存储键统一映射到 ES / NQ。
-KLINE_SYMBOL_ALIASES = {
-    "MES": "ES",
-    "MNQ": "NQ",
-}
+SOURCE_PERIOD = {"1m": "1m", "5m": "1m", "15m": "1m", "30m": "1m", "1h": "1h", "4h": "1h", "1d": "1h"}
 _CONTRACT_ROOT = re.compile(r"^([A-Z0-9]+?)(?:[FGHJKMNQUVXZ]\d{1,2})?$")
 
 
@@ -52,39 +49,19 @@ def _extract_symbol_root(symbol: str) -> str:
 
 
 def validate_kline_symbol(symbol: str) -> str:
-    """Normalize any ES/NQ family symbol to the local K-line storage root.
-
-    Accepts roots (``ES``), micros (``MNQ``), and concrete contracts (``ESU6``).
-    Local bars are always keyed by ``ES`` / ``NQ``.
-    """
+    """Normalize concrete contracts to their own root, preserving micros."""
     root = _extract_symbol_root(symbol)
-    storage = KLINE_SYMBOL_ALIASES.get(root, root)
+    storage = root
     if storage not in KLINE_SYMBOLS:
-        raise ValueError("K 线仅支持 ES、NQ")
+        raise ValueError("K 线仅支持 ES、NQ、MES、MNQ、MGC")
     return storage
-
-
-class MarketBar(Base):
-    __tablename__ = "market_bars"
-    __table_args__ = (UniqueConstraint("symbol", "period", "opened_at", name="uq_market_bar_bucket"),)
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    symbol: Mapped[str] = mapped_column(String(100), index=True)
-    period: Mapped[str] = mapped_column(String(10), index=True)
-    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    open: Mapped[float] = mapped_column(Float)
-    high: Mapped[float] = mapped_column(Float)
-    low: Mapped[float] = mapped_column(Float)
-    close: Mapped[float] = mapped_column(Float)
-    volume: Mapped[float | None] = mapped_column(Float, nullable=True)
-    source: Mapped[str] = mapped_column(String(40), default="provider")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
 
 class CollectionState(Base):
     __tablename__ = "market_collection_states"
 
     symbol: Mapped[str] = mapped_column(String(100), primary_key=True)
+    covered_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     latest_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -282,43 +259,10 @@ def find_missing_session_buckets(
     return missing
 
 
-async def upsert_bars(symbol: str, period: str, bars: Sequence[Bar], source: str = "provider") -> int:
-    """批量写入或更新 K 线数据（PostgreSQL ON CONFLICT DO UPDATE），返回写入条数。"""
-    symbol = validate_kline_symbol(symbol)
-    if not bars:
-        return 0
-    values = [{"id": uuid.uuid4(), "symbol": symbol, "period": period, "opened_at": bar.timestamp, "open": bar.open, "high": bar.high, "low": bar.low, "close": bar.close, "volume": bar.volume, "source": source, "updated_at": datetime.now(UTC)} for bar in bars]
-    statement = pg_insert(MarketBar).values(values)
-    statement = statement.on_conflict_do_update(index_elements=[MarketBar.symbol, MarketBar.period, MarketBar.opened_at], set_={"open": statement.excluded.open, "high": statement.excluded.high, "low": statement.excluded.low, "close": statement.excluded.close, "volume": statement.excluded.volume, "source": statement.excluded.source, "updated_at": statement.excluded.updated_at})
-    async with SessionFactory() as session:
-        await session.execute(statement)
-        await session.commit()
-    logger.info(
-        "market_bars upserted request_id=%s symbol=%s period=%s source=%s bars=%d",
-        get_request_id(),
-        symbol,
-        period,
-        source,
-        len(values),
-    )
-    return len(values)
-
-
 async def read_stored_bars(symbol: str, period: str, start: datetime, end: datetime) -> list[Bar]:
-    """从数据库读取指定标的、周期和时间范围内的 K 线数据。"""
-    symbol = validate_kline_symbol(symbol)
-    async with SessionFactory() as session:
-        rows = (await session.scalars(select(MarketBar).where(MarketBar.symbol == symbol, MarketBar.period == period, MarketBar.opened_at >= start, MarketBar.opened_at < end).order_by(MarketBar.opened_at))).all()
-    logger.info(
-        "market_bars read_stored request_id=%s symbol=%s period=%s start=%s end=%s bars=%d",
-        get_request_id(),
-        symbol,
-        period,
-        start.isoformat(),
-        end.isoformat(),
-        len(rows),
-    )
-    return [Bar(timestamp=row.opened_at, open=row.open, high=row.high, low=row.low, close=row.close, volume=row.volume) for row in rows]
+    """Read every market consumer from the unified archive."""
+    from app.market.archive import read_archive_bars
+    return await read_archive_bars(validate_kline_symbol(symbol),period,start,end)
 
 
 async def query_market_range(
@@ -331,6 +275,8 @@ async def query_market_range(
     include_partial: bool = False,
 ) -> MarketRange:
     """查询指定标的和周期的 K 线数据，自动从源周期聚合并计算覆盖率。"""
+    from app.market.archive import archive_range_is_covered
+
     source_period = SOURCE_PERIOD[period]
     logger.info(
         "market_bars query_market_range request_id=%s symbol=%s period=%s source_period=%s start=%s end=%s include_partial=%s",
@@ -342,10 +288,22 @@ async def query_market_range(
         end.isoformat(),
         include_partial,
     )
-    source_bars = await read_stored_bars(symbol, source_period, floor_bucket(start, PERIOD_MINUTES[source_period]), end)
-    coverage = calculate_coverage(source_bars, start, min(end, closed_boundary(now or datetime.now(UTC), source_period)), source_period)
+    source_start = floor_bucket(start, PERIOD_MINUTES[source_period])
+    coverage_end = min(end, closed_boundary(now or datetime.now(UTC), source_period))
+    # Read committed proof first so a later backfill commit cannot make an older
+    # empty bar snapshot appear complete. Proof only covers the closed prefix.
+    archive_covered = source_start < coverage_end and await archive_range_is_covered(
+        validate_kline_symbol(symbol), source_start, coverage_end,
+    )
+    source_bars = await read_stored_bars(symbol, source_period, source_start, end)
+    coverage = calculate_coverage(source_bars, start, coverage_end, source_period)
+    if not coverage.complete and archive_covered:
+        # Downloaded empty sessions are complete even when wall-clock buckets have
+        # no trades. Keep counts unchanged and clear the false missing-bar report.
+        coverage = coverage.model_copy(update={"complete": True, "missing_buckets": []})
     bars = source_bars if period == source_period else aggregate_bars(source_bars, period, now=now, include_partial=include_partial)
-    bars = [bar for bar in bars if bar.timestamp >= start and bar.timestamp < end]
+    bars = [bar for bar in bars if bar.timestamp >= start and bar.timestamp < end
+        and (include_partial or bar.timestamp < closed_boundary(now or datetime.now(UTC),period))]
     logger.info(
         "market_bars query_market_range result request_id=%s symbol=%s period=%s source_bars=%d returned_bars=%d coverage_expected=%d coverage_actual=%d coverage_complete=%s missing=%d",
         get_request_id(),
@@ -366,48 +324,29 @@ async def query_market_range(
     )
 
 
-async def materialize_hour(symbol: str, start: datetime, end: datetime, *, now: datetime | None = None) -> int:
-    """将 1 分钟 K 线聚合为 1 小时 K 线并写入数据库，返回写入条数。"""
-    minute_bars = await read_stored_bars(symbol, "1m", floor_bucket(start, 60), end)
-    return await upsert_bars(symbol, "1h", aggregate_bars(minute_bars, "1h", now=now), source="aggregate:1m")
-
-
 async def backfill_range(provider: MassiveHistoricalProvider, query: HistoricalQuery) -> MarketRange:
-    """从上游拉取历史 1m K 线写入本地，物化 1h K 线，并返回查询结果。"""
-    # 上游以 1m OHLC 为标准盘中数据源，不直接标记 provider 的 1m 行为 1h 行；
-    # 1h 由本地确定性聚合生成。
-    storage_symbol = validate_kline_symbol(query.symbol)
-    logger.info(
-        "market_bars backfill_start request_id=%s symbol=%s period=%s start=%s end=%s",
-        get_request_id(),
-        storage_symbol,
-        query.period.value,
-        query.start.isoformat(),
-        query.end.isoformat(),
-    )
-    source_query = query.model_copy(update={
-        "symbol": storage_symbol,
-        "period": Period.minute_1,
-        "provider_schema": "ohlcv-1m",
-    })
-    fetched = await provider.get_range(source_query)
-    logger.info(
-        "market_bars backfill_fetched request_id=%s symbol=%s source_bars=%d",
-        get_request_id(),
-        storage_symbol,
-        len(fetched),
-    )
-    await upsert_bars(storage_symbol, "1m", fetched)
-    await materialize_hour(storage_symbol, query.start, query.end)
-    result = await query_market_range(storage_symbol, query.period.value, query.start, query.end)
-    logger.info(
-        "market_bars backfill_finished request_id=%s symbol=%s period=%s returned_bars=%d",
-        get_request_id(),
-        storage_symbol,
-        query.period.value,
-        len(result.bars),
-    )
-    return result
+    """Backfill exact continuous records into the single minute source."""
+    from app.market.archive import write_archive_coverage, write_archive_records
+
+    symbol = validate_kline_symbol(query.symbol)
+    source_start = floor_bucket(query.start, PERIOD_MINUTES[SOURCE_PERIOD[query.period.value]])
+    try:
+        # Bound interactive retries, writes and the final read as one request.
+        # Long-running collectors continue using get_archive_range directly.
+        async with asyncio.timeout(HISTORICAL_BACKFILL_TIMEOUT_SECONDS):
+            batch = await provider.get_archive_range(symbol, source_start, query.end)
+            async with SessionFactory.begin() as session:
+                await write_archive_records(session, batch.records)
+                if batch.covered_until is not None:
+                    await write_archive_coverage(session, symbol, source_start, min(query.end, batch.covered_until))
+            return await query_market_range(symbol, query.period.value, query.start, query.end)
+    except TimeoutError as exc:
+        logger.warning(
+            "market_bars backfill_timeout request_id=%s symbol=%s period=%s start=%s end=%s timeout_seconds=%s",
+            get_request_id(), symbol, query.period.value, query.start.isoformat(), query.end.isoformat(),
+            HISTORICAL_BACKFILL_TIMEOUT_SECONDS, exc_info=True,
+        )
+        raise ProviderError("provider_timeout", "Historical backfill timed out", 504) from exc
 
 
 class LocalFirstMarketProvider:
@@ -433,7 +372,7 @@ class LocalFirstMarketProvider:
             query.end.isoformat(),
         )
         local = await query_market_range(storage_symbol, query.period.value, query.start, query.end)
-        if local.bars and local.coverage.complete:
+        if local.coverage.complete:
             logger.info(
                 "market_bars provider_hit request_id=%s symbol=%s period=%s bars=%d",
                 get_request_id(),
@@ -474,6 +413,7 @@ class MinuteCollector:
         self.settings = settings or get_settings()
         self.provider_factory = provider_factory or (lambda: MassiveHistoricalProvider(self.settings))
         self._stop = asyncio.Event()
+        self.last_round_errors = 0
 
     def _collection_window(self, latest_closed_at: datetime | None, end: datetime) -> tuple[datetime, datetime]:
         """计算一次采集的时间窗口 [start, chunk_end)。
@@ -489,89 +429,157 @@ class MinuteCollector:
         chunk_end = min(end, start + max_span)
         return start, chunk_end
 
+    async def _finish_failure(self, symbol: str, run_id: uuid.UUID, status: str, error: str) -> None:
+        async with SessionFactory.begin() as session:
+            state = await session.get(CollectionState,symbol)
+            run = await session.get(ScheduledJobRun,run_id)
+            if state:
+                state.status = status
+                state.last_error = error
+                state.consecutive_failures = (state.consecutive_failures or 0)+1
+            if run:
+                run.status=status
+                run.completed_at=datetime.now(UTC)
+                run.detail={**(run.detail or {}),"error":error}
+
     async def collect_symbol(self, symbol: str, now: datetime | None = None) -> int:
-        """采集单个标的的最新 K 线数据，更新采集状态，返回写入条数。"""
-        current = now or datetime.now(UTC)
-        end = closed_boundary(current, "1m")
-        async with SessionFactory() as session:
-            state = await session.get(CollectionState, symbol)
-            if state is None:
-                state = CollectionState(symbol=symbol)
-                session.add(state)
-            state.last_attempt_at = current
-            state.status = "running"
-            latest = state.latest_closed_at
-            await session.commit()
-        start, chunk_end = self._collection_window(latest, end)
-        if start >= chunk_end:
-            return 0
-        try:
-            query = HistoricalQuery(symbol=symbol, period=Period.minute_1, start=start, end=chunk_end)
-            bars = [bar for bar in await self.provider_factory().get_range(query) if bar.timestamp < chunk_end]
-            count = await upsert_bars(symbol, "1m", bars)
-            if bars:
-                await materialize_hour(symbol, start, chunk_end, now=current)
-            async with SessionFactory() as session:
-                state = await session.get(CollectionState, symbol)
-                if state:
-                    if bars:
-                        # Advance only over bars we actually received so empty
-                        # provider responses cannot skip session holes forever.
-                        state.latest_closed_at = max(bar.timestamp for bar in bars) + timedelta(minutes=1)
-                        state.status = "ok"
-                    else:
-                        state.status = "no_data"
-                    state.last_success_at = current
-                    state.last_error = None
-                    state.consecutive_failures = 0
-                    await session.commit()
-            return count
-        except ProviderError as exc:
-            if exc.code == "provider_data_not_ready":
-                async with SessionFactory() as session:
-                    state = await session.get(CollectionState, symbol)
-                    if state:
-                        state.status = "waiting_for_provider"
-                        state.last_error = None
-                        state.consecutive_failures = 0
-                        await session.commit()
+        """Persist a slot, fetch raw records, and commit data plus coverage atomically."""
+        from app.market.archive import initial_coverage, write_archive_records
+        current=now or datetime.now(UTC)
+        interval=getattr(self.settings,"collector_interval_seconds",60)
+        slot=datetime.fromtimestamp(int(current.timestamp())//interval*interval,UTC)
+        run_id=uuid.uuid4()
+        async with SessionFactory.begin() as session:
+            claimed=await session.scalar(pg_insert(ScheduledJobRun).values(
+                id=run_id,job_key=f"market-minute:{symbol}",scheduled_for=slot,
+                status="running",started_at=current,detail={"symbol":symbol,"trace_id":get_request_id()}
+                ).on_conflict_do_nothing(index_elements=[ScheduledJobRun.job_key,ScheduledJobRun.scheduled_for]).returning(ScheduledJobRun.id))
+            if not claimed:
                 return 0
-            async with SessionFactory() as session:
-                state = await session.get(CollectionState, symbol)
-                if state:
-                    state.status = "failed"
-                    state.last_error = exc.code
-                    state.consecutive_failures += 1
-                    await session.commit()
-            raise
-        except Exception as exc:
-            async with SessionFactory() as session:
-                state = await session.get(CollectionState, symbol)
-                if state:
-                    state.status = "failed"
-                    state.last_error = type(exc).__name__
-                    state.consecutive_failures += 1
-                    await session.commit()
-            raise
+            state=await session.get(CollectionState,symbol)
+            if state is None:
+                state=CollectionState(symbol=symbol,consecutive_failures=0)
+                session.add(state)
+            if state.consecutive_failures and state.last_attempt_at:
+                cooldown=min(900,60*2**min(state.consecutive_failures,4))
+                if (current-state.last_attempt_at).total_seconds()<cooldown:
+                    run=await session.get(ScheduledJobRun,run_id)
+                    run.status="deferred"
+                    run.completed_at=current
+                    run.detail={**(run.detail or {}),"reason":"failure_backoff"}
+                    return 0
+            latest=state.covered_until
+            if latest is None:
+                initial=await initial_coverage(session,symbol)
+                candidates=[value for value in (initial,state.latest_closed_at) if value is not None]
+                latest=max(candidates) if candidates else None
+            state.last_attempt_at=current
+            state.status="running"
+        end=closed_boundary(current,"1m")
+        start,chunk_end=self._collection_window(latest,end)
+        with bind_trace_fields(run_id=str(run_id)):
+            try:
+                async with SessionFactory.begin() as session:
+                    run=await session.get(ScheduledJobRun,run_id)
+                    run.detail={**(run.detail or {}),"start":start.isoformat(),"end":chunk_end.isoformat()}
+                timeout=max(1.0,self.settings.hist_timeout_seconds*(self.settings.hist_max_retries+1)+5)
+                async with asyncio.timeout(timeout):
+                    batch=await self.provider_factory().get_archive_range(symbol,start,chunk_end)
+                async with SessionFactory.begin() as session:
+                    state=await session.get(CollectionState,symbol)
+                    run=await session.get(ScheduledJobRun,run_id)
+                    count=await write_archive_records(session,batch.records)
+                    if batch.covered_until is not None:
+                        state.covered_until=max(state.covered_until or batch.covered_until,batch.covered_until)
+                        if batch.records:
+                            state.latest_closed_at=max(state.latest_closed_at or start,max(record.timestamp_utc for record in batch.records)+timedelta(minutes=1))
+                        state.last_success_at=current
+                        state.status="ok" if batch.records else "no_data"
+                        state.last_error=None
+                        state.consecutive_failures=0
+                        run.status="success"
+                    else:
+                        state.status="waiting_for_provider"
+                        state.last_error=None
+                        run.status="waiting_for_provider"
+                    run.completed_at=datetime.now(UTC)
+                    run.detail={**(run.detail or {}),"rows":count,
+                        "covered_until":batch.covered_until.isoformat() if batch.covered_until else None}
+                logger.info("archive collection_finished symbol=%s rows=%d status=%s trace_id=%s run_id=%s",
+                    symbol,count,run.status,get_request_id(),run_id)
+                return count
+            except asyncio.CancelledError:
+                cleanup=asyncio.create_task(self._finish_failure(symbol,run_id,"cancelled","cancelled"))
+                await asyncio.shield(cleanup)
+                raise
+            except Exception as exc:
+                error=exc.code if isinstance(exc,ProviderError) else type(exc).__name__
+                status="timed_out" if isinstance(exc,TimeoutError) or error=="provider_timeout" else "failed"
+                await self._finish_failure(symbol,run_id,status,error)
+                raise
 
     async def run_once(self, now: datetime | None = None) -> None:
-        """执行一轮采集：遍历所有配置标的并评估告警规则。"""
+        """One global DB lease across embedded and external worker processes."""
+        from app.market.archive import table
         await ensure_schema()
-        for symbol in self.settings.collector_symbols:
-            try:
-                await self.collect_symbol(symbol, now)
-            except Exception:
-                logger.exception("minute collection failed for %s", symbol)
-        await evaluate_alert_rules(now or datetime.now(UTC))
+        tokens=set_trace_context(str(uuid.uuid4()))
+        try:
+            # Transaction-scoped lock releases on connection loss and process exit.
+            async with engine.begin() as lease:
+                if not (await lease.execute(text("SELECT pg_try_advisory_xact_lock(CAST(:lock_id AS bigint))"), {"lock_id":COLLECTOR_LOCK_ID})).scalar_one():
+                    logger.info("archive collection_skipped reason=worker_lock trace_id=%s",get_request_id())
+                    return
+                current=now or datetime.now(UTC)
+                async with SessionFactory.begin() as session:
+                    await session.execute(update(ScheduledJobRun).where(
+                        ScheduledJobRun.job_key.like("market-minute:%"),ScheduledJobRun.status=="running"
+                        ).values(status="interrupted",completed_at=current))
+                    await session.execute(update(CollectionState).where(CollectionState.status=="running"
+                        ).values(status="interrupted",last_error="worker_interrupted"))
+                    await session.execute(text(f"""DELETE FROM {table('live_events')} e
+                      WHERE e.timestamp_utc<:cutoff AND EXISTS (
+                        SELECT 1 FROM {table('bars')} b WHERE b.root=e.root
+                        AND b.timestamp_utc=date_trunc('minute',e.timestamp_utc)
+                        AND b.confirmed AND b.instrument_id>0)"""),
+                        {"cutoff":current-timedelta(days=1)})
+                interval=getattr(self.settings,"collector_interval_seconds",60)
+                slot=datetime.fromtimestamp(int(current.timestamp())//interval*interval,UTC)
+                async with SessionFactory() as session:
+                    existing=set((await session.scalars(select(ScheduledJobRun.job_key).where(
+                        ScheduledJobRun.scheduled_for==slot,ScheduledJobRun.job_key.like("market-minute:%")))).all())
+                performed=False
+                self.last_round_errors=0
+                for symbol in self.settings.collector_symbols:
+                    if f"market-minute:{symbol}" in existing:
+                        continue
+                    # Slots are claimed independently: one symbol's failure never blocks another.
+                    try:
+                        await self.collect_symbol(symbol,current)
+                        performed=True
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        performed=True
+                        self.last_round_errors+=1
+                        logger.exception("archive collection_failed symbol=%s trace_id=%s",symbol,get_request_id())
+                if performed:
+                    await evaluate_alert_rules(current)
+        finally:
+            reset_trace_context(tokens)
 
     async def run_forever(self) -> None:
-        """持续运行采集循环，每轮间隔约 60 秒，直到调用 stop()。"""
+        """Run all targets periodically; transient DB failures do not kill the service."""
         while not self._stop.is_set():
-            started = datetime.now(UTC)
-            await self.run_once(started)
-            delay = max(1.0, 60.0 - (datetime.now(UTC) - started).total_seconds())
+            started=datetime.now(UTC)
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                await self.run_once(started)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("archive round_failed")
+            delay=max(1.0,getattr(self.settings,"collector_interval_seconds",60)-(datetime.now(UTC)-started).total_seconds())
+            try:
+                await asyncio.wait_for(self._stop.wait(),timeout=delay)
             except TimeoutError:
                 pass
 
@@ -677,39 +685,51 @@ async def evaluate_alert_rules(now: datetime) -> None:
                 await session.rollback(); continue
             await session.commit()
 
-        analysis_result = None
-        analysis_error = None
+        from app.core.logging_context import get_trace_id, normalize_trace_id, reset_trace_context, set_trace_context
+        trace_id = get_trace_id()
+        tokens = set_trace_context(normalize_trace_id(None if trace_id == '-' else trace_id), run_id=str(run_id))
         try:
-            from app.analysis.workflow.graph import run_demo_analysis_workflow
-            from app.analysis.history.service import persist_analysis_result
-            # Snapshot: last ANALYSIS_LOOKBACK_BARS closed bars ending at closed_boundary(now).
-            # analysis_mode must stay "realtime" so history maps to the live workbench.
-            analysis_query = HistoricalQuery(
-                symbol=rule.symbol,
-                period=Period(rule.period),
-                start=end - timedelta(minutes=PERIOD_MINUTES[rule.period] * ANALYSIS_LOOKBACK_BARS),
-                end=end,
-                analysis_mode="realtime",
-            )
-            analysis_result = await run_demo_analysis_workflow(LocalFirstMarketProvider(MassiveHistoricalProvider(get_settings())), analysis_query)
-            await persist_analysis_result(analysis_result)
-        except Exception as exc:
-            analysis_error = type(exc).__name__
-            logger.exception("scheduled analysis failed for rule %s", rule.id)
+            analysis_result = None
+            analysis_error = None
+            try:
+                from app.analysis.workflow.graph import run_demo_analysis_workflow
+                from app.analysis.history.service import persist_analysis_result
+                from app.knowledge.service import get_or_create_run_prompt_snapshot
+                # Snapshot: last ANALYSIS_LOOKBACK_BARS closed bars ending at closed_boundary(now).
+                # analysis_mode must stay "realtime" so history maps to the live workbench.
+                analysis_query = HistoricalQuery(
+                    symbol=rule.symbol,
+                    period=Period(rule.period),
+                    start=end - timedelta(minutes=PERIOD_MINUTES[rule.period] * ANALYSIS_LOOKBACK_BARS),
+                    end=end,
+                    analysis_mode="realtime",
+                )
+                # Scheduled rules currently have no user owner; use the ownerless scope.
+                prompt_snapshot = await get_or_create_run_prompt_snapshot(run_id, None)
+                analysis_result = await run_demo_analysis_workflow(
+                    LocalFirstMarketProvider(MassiveHistoricalProvider(get_settings())), analysis_query,
+                    run_id=run_id, prompt_snapshot=prompt_snapshot,
+                )
+                await persist_analysis_result(analysis_result)
+            except Exception as exc:
+                analysis_error = type(exc).__name__
+                logger.exception("scheduled analysis failed for rule %s", rule.id)
 
-        async with SessionFactory() as session:
-            run = await session.get(ScheduledJobRun, run_id)
-            if run:
-                run.status = "completed" if analysis_result else "failed"
-                run.completed_at = datetime.now(UTC)
-                run.detail = {"change_percent": change, "run_id": analysis_result.run_id if analysis_result else None, "error": analysis_error}
-            rule_row = await session.get(AlertRule, rule.id)
-            if rule_row: rule_row.last_run_at = now
-            trade_signal = bool(analysis_result and analysis_result.stage2.terminal.outcome == "trade")
-            if change >= rule.threshold or trade_signal:
-                direction = "up" if latest.close >= latest.open else "down"
-                signal_key = f"trade:{analysis_result.stage2.decision.direction}" if trade_signal else f"range:{direction}:{rule.threshold}"
-                reason = analysis_result.stage2.terminal.reason if trade_signal else f"已收盘 K 线振幅 {change:.2f}%，达到阈值 {rule.threshold:.2f}%"
-                alert_statement = pg_insert(AlertRecord).values(id=uuid.uuid4(), rule_id=rule.id, bar_opened_at=slot, signal_key=signal_key, title=f"{rule.symbol} {rule.period} {'交易信号' if trade_signal else '波动告警'}", message=reason, evidence={"open": latest.open, "close": latest.close, "change_percent": change, "run_id": analysis_result.run_id if analysis_result else None}, delivery_status="browser_pending")
-                await session.execute(alert_statement.on_conflict_do_nothing(index_elements=[AlertRecord.rule_id, AlertRecord.bar_opened_at, AlertRecord.signal_key]))
-            await session.commit()
+            async with SessionFactory() as session:
+                run = await session.get(ScheduledJobRun, run_id)
+                if run:
+                    run.status = "completed" if analysis_result else "failed"
+                    run.completed_at = datetime.now(UTC)
+                    run.detail = {"change_percent": change, "run_id": analysis_result.run_id if analysis_result else None, "error": analysis_error}
+                rule_row = await session.get(AlertRule, rule.id)
+                if rule_row: rule_row.last_run_at = now
+                trade_signal = bool(analysis_result and analysis_result.stage2.terminal.outcome == "trade")
+                if change >= rule.threshold or trade_signal:
+                    direction = "up" if latest.close >= latest.open else "down"
+                    signal_key = f"trade:{analysis_result.stage2.decision.direction}" if trade_signal else f"range:{direction}:{rule.threshold}"
+                    reason = analysis_result.stage2.terminal.reason if trade_signal else f"已收盘 K 线振幅 {change:.2f}%，达到阈值 {rule.threshold:.2f}%"
+                    alert_statement = pg_insert(AlertRecord).values(id=uuid.uuid4(), rule_id=rule.id, bar_opened_at=slot, signal_key=signal_key, title=f"{rule.symbol} {rule.period} {'交易信号' if trade_signal else '波动告警'}", message=reason, evidence={"open": latest.open, "close": latest.close, "change_percent": change, "run_id": analysis_result.run_id if analysis_result else None}, delivery_status="browser_pending")
+                    await session.execute(alert_statement.on_conflict_do_nothing(index_elements=[AlertRecord.rule_id, AlertRecord.bar_opened_at, AlertRecord.signal_key]))
+                await session.commit()
+        finally:
+            reset_trace_context(tokens)

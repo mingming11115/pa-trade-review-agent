@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy import and_, desc, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.analysis.tasks.lifecycle import transition_run
@@ -330,7 +330,7 @@ class AnalysisTaskRepository:
             )
             if not statuses or any(status in ACTIVE_RUNS for status in statuses):
                 target = TaskStatus.running
-            elif all(status in {RunStatus.completed.value, RunStatus.degraded.value, RunStatus.completed_with_warnings.value} for status in statuses):
+            elif all(status == RunStatus.completed.value for status in statuses):
                 target = TaskStatus.completed
             elif any(status in {RunStatus.completed.value, RunStatus.degraded.value, RunStatus.completed_with_warnings.value} for status in statuses):
                 target = TaskStatus.completed_with_warnings
@@ -484,48 +484,44 @@ class AnalysisTaskRepository:
             raise AppError("analysis_run_not_found", "分析运行不存在", 404)
         return record
 
-    async def mark_run_running(self, run_id: uuid.UUID) -> None:
+    async def mark_run_running(self, run_id: uuid.UUID) -> bool:
         async with self.sessions() as session:
-            record = await session.get(AnalysisRun, run_id)
-            if record is None:
-                return
             now = datetime.now(UTC)
-            record.status = RunStatus.running.value
-            record.started_at = now
-            record.heartbeat_at = now
-            record.updated_at = now
+            result = await session.execute(update(AnalysisRun).where(
+                AnalysisRun.id == run_id, AnalysisRun.status == RunStatus.queued.value,
+            ).values(status=RunStatus.running.value, started_at=now, heartbeat_at=now, updated_at=now))
             await session.commit()
+            return bool(result.rowcount)
 
     async def request_run_cancel(self, owner_id: uuid.UUID | None, run_id: uuid.UUID) -> AnalysisRun:
         async with self.sessions() as session:
-            record = await session.scalar(select(AnalysisRun).where(
+            await session.execute(update(AnalysisRun).where(
                 AnalysisRun.id == run_id,
                 _owner_clause(AnalysisRun.user_id, owner_id),
-            ))
-            if record is None:
-                raise AppError("analysis_run_not_found", "分析运行不存在", 404)
-            if record.status in {RunStatus.queued.value, RunStatus.running.value}:
-                record.status = RunStatus.cancel_requested.value
-                record.updated_at = datetime.now(UTC)
-                await session.commit()
-                await session.refresh(record)
-            return record
+                AnalysisRun.status.in_([RunStatus.queued.value, RunStatus.running.value]),
+            ).values(status=RunStatus.cancel_requested.value, updated_at=datetime.now(UTC)))
+            await session.commit()
+        return await self.get_run(owner_id, run_id)
 
     async def update_run_result(self, run_id: uuid.UUID, payload: dict[str, Any]) -> AnalysisRun:
         async with self.sessions() as session:
             record = await session.get(AnalysisRun, run_id)
             if record is None:
                 raise AppError("analysis_run_not_found", "分析运行不存在", 404)
-            record.result_json = payload
             query = payload.get("query") or {}
             stage2 = payload.get("stage2") or {}
-            record.mode = str(query.get("analysis_mode") or record.mode)
-            record.symbol = str(query.get("symbol") or record.symbol)
-            record.period = str(query.get("period") or record.period)
-            record.resolved_symbol = str(payload.get("resolved_symbol") or record.resolved_symbol)
-            record.direction = str((payload.get("analysis") or {}).get("direction") or record.direction)
-            record.terminal_outcome = str((stage2.get("terminal") or {}).get("outcome") or record.terminal_outcome)
-            record.updated_at = datetime.now(UTC)
+            await session.execute(update(AnalysisRun).where(
+                AnalysisRun.id == run_id, AnalysisRun.status == RunStatus.running.value,
+            ).values(
+                result_json=payload,
+                mode=str(query.get("analysis_mode") or record.mode),
+                symbol=str(query.get("symbol") or record.symbol),
+                period=str(query.get("period") or record.period),
+                resolved_symbol=str(payload.get("resolved_symbol") or record.resolved_symbol),
+                direction=str((payload.get("analysis") or {}).get("direction") or record.direction),
+                terminal_outcome=str((stage2.get("terminal") or {}).get("outcome") or record.terminal_outcome),
+                updated_at=datetime.now(UTC),
+            ))
             await session.commit()
             await session.refresh(record)
             return record
@@ -539,6 +535,8 @@ class AnalysisTaskRepository:
         failure_code: str | None = None,
         failure_message: str | None = None,
     ) -> AnalysisRun:
+        if status.value in ACTIVE_RUNS:
+            raise AppError("invalid_run_transition", "结束运行必须指定终态", 409)
         async with self.sessions() as session:
             run = await session.scalar(select(AnalysisRun).where(
                 AnalysisRun.id == run_id,
@@ -546,14 +544,24 @@ class AnalysisTaskRepository:
             ))
             if run is None:
                 raise AppError("analysis_run_not_found", "分析运行不存在", 404)
-            run.status = status.value
-            run.failure_code = failure_code
-            run.failure_message = failure_message
-            run.completed_at = datetime.now(UTC)
-            run.updated_at = datetime.now(UTC)
+            if run.status not in ACTIVE_RUNS:
+                return run
+            # Cancellation already accepted wins against a late successful result.
+            if run.status == RunStatus.cancel_requested.value:
+                status = RunStatus.cancelled
+                failure_code = None
+                failure_message = None
+            transition_run(RunStatus(run.status), status)
+            now = datetime.now(UTC)
+            changed = await session.execute(update(AnalysisRun).where(
+                AnalysisRun.id == run_id, AnalysisRun.status == run.status,
+            ).values(status=status.value, failure_code=failure_code,
+                     failure_message=failure_message, completed_at=now, updated_at=now))
             await session.commit()
             await session.refresh(run)
             task_id = run.task_id
+        if not changed.rowcount and run.status == RunStatus.cancel_requested.value:
+            return await self.finish_run(owner_id, run_id, status=RunStatus.cancelled)
         await self.aggregate_task_status(task_id)
         return run
 

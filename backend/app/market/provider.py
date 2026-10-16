@@ -15,6 +15,7 @@ from app.core.contracts import resolve_contract_symbol
 from app.core.errors import ProviderError
 from app.core.logging_context import get_request_id
 from app.core.models import Bar, HistoricalQuery
+from app.market.archive import ArchiveBatch
 
 
 TIMESTAMP_FIELDS = ("timestamp", "ts_event", "ts", "time", "datetime")
@@ -113,6 +114,65 @@ class MassiveHistoricalProvider:
             len(bars),
         )
         return bars
+
+    async def get_archive_range(self, symbol: str, start: datetime, end: datetime) -> ArchiveBatch:
+        """Fetch continuous minute records with exact raw fields and proven coverage."""
+        from app.market.archive import ArchiveBatch, ArchiveRecord
+        self._validate_configuration()
+        if symbol not in {"ES", "NQ", "MES", "MNQ", "MGC"}:
+            raise ValueError("Unsupported archive symbol")
+        # Request the same complete-minute window that we validate and archive.
+        effective_end = end.replace(second=0, microsecond=0)
+        if effective_end <= start:
+            return ArchiveBatch([], None)
+        payload = {"dataset":"GLBX.MDP3", "symbols":f"{symbol}.c.0",
+            "stype_in":"continuous", "schema":"ohlcv-1m", "start":start.isoformat(),
+            "end":effective_end.isoformat(), "encoding":"json"}
+        url = f"{self.settings.hist_base_url}/v0/timeseries.get_range"
+        response = await self._request_with_retries(url,payload)
+        if response.status_code == 422:
+            try:
+                detail = response.json().get("detail",{})
+            except (ValueError,AttributeError):
+                detail = {}
+            if detail.get("case") == "data_start_after_available_end":
+                return ArchiveBatch([], None)
+            if detail.get("case") == "data_end_after_available_end":
+                available = (detail.get("payload") or {}).get("available_end")
+                if available:
+                    effective_end = min(effective_end,datetime.fromisoformat(str(available).replace("Z","+00:00")).replace(second=0,microsecond=0))
+                    if effective_end <= start:
+                        return ArchiveBatch([],None)
+                    response = await self._request_with_retries(url,{**payload,"end":effective_end.isoformat()})
+        self._raise_for_status(response)
+        records = []
+        seen = set()
+        for raw in self._decode_records(response):
+            try:
+                hd = raw.get("hd",{})
+                timestamp = self._parse_timestamp(raw).astimezone(timezone.utc)
+                ns_value = raw.get("ts_event",hd.get("ts_event"))
+                ns = int(ns_value) if str(ns_value).isdigit() and int(ns_value)>=100_000_000_000_000_000 else int(timestamp.timestamp())*1_000_000_000
+                identifier = int(raw.get("instrument_id",hd.get("instrument_id")))
+                publisher = int(raw.get("publisher_id",hd.get("publisher_id",0)))
+                prices = [int(raw[key]) for key in ("open","high","low","close")]
+                volume = int(raw["volume"])
+                if identifier<=0 or ns%60_000_000_000 or volume<0 or any(value<=0 for value in prices):
+                    raise ValueError("Invalid raw fields")
+                if prices[1]<max(prices[0],prices[3],prices[2]) or prices[2]>min(prices[0],prices[3]):
+                    raise ValueError("Invalid OHLC bounds")
+                if not start<=timestamp<effective_end:
+                    raise ValueError("Record outside effective window")
+                # c.0 must select one contract for each minute; ambiguity is an upstream error.
+                if ns in seen:
+                    raise ValueError("Duplicate continuous minute")
+                seen.add(ns)
+                records.append(ArchiveRecord(symbol,f"{symbol}.c.0",identifier,ns,timestamp,*prices,volume,publisher))
+            except (KeyError,TypeError,ValueError,OverflowError) as exc:
+                raise ProviderError("provider_invalid_data","Invalid raw archive record",502) from exc
+        logger.info("archive upstream_response symbol=%s records=%d covered_until=%s trace_id=%s",
+            symbol,len(records),effective_end,get_request_id())
+        return ArchiveBatch(sorted(records,key=lambda record:record.ts_event_ns),effective_end)
 
     async def _request_with_retries(
         self, url: str, payload: dict[str, str]

@@ -76,17 +76,23 @@ class ReviewTaskConfig(BaseModel):
     periods: list[Period] = Field(min_length=1)
 
 
+class ReplayReviewTaskConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    saved_version_id: str = Field(min_length=1)
+    periods: list[Period] = Field(min_length=1, max_length=7)
+
+
 class AnalysisTaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["analysis", "review"]
+    kind: Literal["analysis", "review", "replay_review"]
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=2000)
     config: AnalysisTaskConfig | ReviewTaskConfig | dict[str, Any]
 
     @model_validator(mode="after")
     def validate_config_for_kind(self) -> "AnalysisTaskCreate":
-        config_type = AnalysisTaskConfig if self.kind == "analysis" else ReviewTaskConfig
+        config_type = {"analysis":AnalysisTaskConfig,"review":ReviewTaskConfig,"replay_review":ReplayReviewTaskConfig}[self.kind]
         self.config = TypeAdapter(config_type).validate_python(self.config)
         return self
 
@@ -253,7 +259,7 @@ Index(
 
 class AnalysisTaskPublic(BaseModel):
     id: uuid.UUID
-    kind: Literal["analysis", "review"]
+    kind: Literal["analysis", "review", "replay_review"]
     title: str
     description: str
     status: TaskStatus
@@ -305,6 +311,10 @@ class AnalysisRunDetailPublic(BaseModel):
     terminal_outcome: str
     created_at: datetime
     updated_at: datetime
+    failure_stage: str | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
+    terminal_reason: str | None = None
     result: dict[str, Any]
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

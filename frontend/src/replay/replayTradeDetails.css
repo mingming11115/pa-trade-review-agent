@@ -1,0 +1,390 @@
+.replay-ledger {
+  --ledger-ink: #242832;
+  --ledger-muted: #777c89;
+  --ledger-line: #e7e9ef;
+  --ledger-hover: #f6f8fc;
+  --ledger-blue: #2962ff;
+  --ledger-red: #d64b55;
+  --ledger-green: #16866d;
+  min-width: 0;
+  max-width: 100%;
+  background: #fff;
+  color: var(--ledger-ink);
+  font-size: 12px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-ledger .replay-ledger-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 32px;
+  margin: 0;
+  padding: 13px 16px 10px;
+}
+
+.replay-ledger .replay-ledger-metric {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.replay-ledger .replay-ledger-metric dt {
+  color: var(--ledger-muted);
+  font-size: 11px;
+}
+
+.replay-ledger .replay-ledger-metric dd {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.replay-ledger .replay-ledger-tabs {
+  display: flex;
+  gap: 24px;
+  min-width: 0;
+  padding: 0 16px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--ledger-line);
+}
+
+/* Override the surrounding replay workspace's rounded and filled buttons. */
+.replay-ledger .replay-ledger-tabs > button,
+.replay-ledger .replay-ledger-actions button,
+.replay-ledger .replay-ledger-protection button {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 30px;
+  margin: 0;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ledger-blue);
+  font: inherit;
+  box-shadow: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.replay-ledger .replay-ledger-tabs > button {
+  min-height: 43px;
+  padding: 12px 0 10px;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--ledger-muted);
+}
+
+.replay-ledger .replay-ledger-tabs > button[aria-selected="true"] {
+  border-bottom-color: var(--ledger-blue);
+  color: var(--ledger-blue);
+}
+
+.replay-ledger .replay-ledger-count {
+  margin-left: 5px;
+  font-size: 11px;
+}
+
+.replay-ledger .replay-ledger-content {
+  min-width: 0;
+  max-height: 340px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* Inactive panels stay mounted to preserve protection edits across tabs. */
+.replay-ledger [hidden] {
+  display: none;
+}
+
+.replay-ledger .replay-ledger-scroll {
+  min-width: 0;
+  max-width: 100%;
+  max-height: 300px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.replay-ledger .replay-ledger-table {
+  width: 100%;
+  min-width: 680px;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: auto;
+  text-align: left;
+  font-size: 12px;
+}
+
+.replay-ledger .replay-ledger-table th,
+.replay-ledger .replay-ledger-table td {
+  padding: 7px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--ledger-line);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.replay-ledger .replay-ledger-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-block: 10px;
+  background: #fff;
+  color: var(--ledger-muted);
+  font-weight: 400;
+}
+
+.replay-ledger .replay-ledger-table td {
+  height: 46px;
+}
+
+.replay-ledger .replay-ledger-table tbody tr:hover {
+  background: var(--ledger-hover);
+}
+
+.replay-ledger .replay-ledger-table .replay-ledger-number {
+  text-align: right;
+}
+
+.replay-ledger .replay-ledger-buy {
+  color: var(--ledger-blue);
+}
+
+.replay-ledger .replay-ledger-sell,
+.replay-ledger .replay-ledger-negative {
+  color: var(--ledger-red);
+}
+
+.replay-ledger .replay-ledger-positive {
+  color: var(--ledger-green);
+}
+
+.replay-ledger .replay-ledger-date {
+  display: block;
+  color: var(--ledger-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.replay-ledger .replay-ledger-status {
+  color: #5d6573;
+  font-size: 11px;
+}
+
+.replay-ledger .replay-ledger-annotation {
+  display: block;
+  color: #986614;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.replay-ledger .replay-ledger-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.replay-ledger .replay-ledger-actions button:hover:not(:disabled),
+.replay-ledger .replay-ledger-protection button:hover:not(:disabled) {
+  background: #edf3ff;
+}
+
+.replay-ledger .replay-ledger-tabs > button:hover:not(:disabled) {
+  color: var(--ledger-blue);
+}
+
+.replay-ledger .replay-ledger-actions button:disabled,
+.replay-ledger .replay-ledger-protection button:disabled,
+.replay-ledger .replay-ledger-tabs > button:disabled {
+  color: #a4aab5;
+  background: transparent;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+.replay-ledger button:focus-visible,
+.replay-ledger input:focus-visible,
+.replay-ledger summary:focus-visible,
+.replay-ledger [tabindex]:focus-visible {
+  outline: 2px solid var(--ledger-blue);
+  outline-offset: -2px;
+}
+
+.replay-ledger .replay-ledger-table td.replay-ledger-empty {
+  margin: 0;
+  padding: 38px 16px;
+  color: var(--ledger-muted);
+  text-align: center;
+}
+
+.replay-ledger .replay-ledger-protection {
+  margin: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--ledger-line);
+}
+
+.replay-ledger .replay-ledger-protection fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.replay-ledger .replay-ledger-protection label {
+  display: flex;
+  flex: 0 1 155px;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  color: var(--ledger-muted);
+  font-size: 11px;
+}
+
+.replay-ledger .replay-ledger-protection input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  margin: 0;
+  padding: 5px 8px;
+  border: 1px solid #cdd3de;
+  border-radius: 3px;
+  background: #fff;
+  color: var(--ledger-ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-ledger .replay-ledger-protection input:disabled {
+  border-color: var(--ledger-line);
+  background: #f5f6f8;
+  color: #9299a5;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+.replay-ledger .replay-ledger-protection button {
+  min-height: 32px;
+}
+
+.replay-ledger .replay-ledger-statistics {
+  padding: 16px;
+}
+
+.replay-ledger .replay-ledger-statistics .replay-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px 24px;
+  margin: 0;
+}
+
+.replay-ledger .replay-ledger-statistics .replay-stats > div {
+  min-width: 0;
+  padding: 0;
+  gap: 5px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.replay-ledger .replay-ledger-statistics .replay-stats small {
+  color: var(--ledger-muted);
+  font-size: 11px;
+}
+
+.replay-ledger .replay-ledger-statistics .replay-stats strong {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.replay-ledger .replay-ledger-statistics .replay-equity {
+  display: block;
+  width: 100%;
+  max-height: 100px;
+  margin-top: 16px;
+  color: var(--ledger-blue);
+}
+
+.replay-ledger .replay-ledger-rules {
+  margin: 0;
+  padding: 10px 16px;
+  border-top: 1px solid var(--ledger-line);
+  color: var(--ledger-muted);
+  font-size: 11px;
+}
+
+.replay-ledger .replay-ledger-rules > summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.replay-ledger .replay-ledger-rules p {
+  margin: 8px 0 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.replay-ledger .replay-ledger-footnote {
+  margin: 0;
+  padding: 10px 16px;
+  color: var(--ledger-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 620px) {
+  .replay-ledger .replay-ledger-summary {
+    gap: 12px 24px;
+    padding-inline: 12px;
+  }
+
+  .replay-ledger .replay-ledger-metric {
+    flex: 1 1 calc(50% - 24px);
+  }
+
+  .replay-ledger .replay-ledger-tabs {
+    gap: 18px;
+    padding-inline: 12px;
+  }
+
+  .replay-ledger .replay-ledger-table th,
+  .replay-ledger .replay-ledger-table td {
+    padding-inline: 12px;
+  }
+
+  .replay-ledger .replay-ledger-protection,
+  .replay-ledger .replay-ledger-statistics,
+  .replay-ledger .replay-ledger-rules,
+  .replay-ledger .replay-ledger-footnote {
+    padding-inline: 12px;
+  }
+
+  .replay-ledger .replay-ledger-statistics .replay-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 20px;
+  }
+}
+
+@media (pointer: coarse) {
+  .replay-ledger .replay-ledger-tabs > button,
+  .replay-ledger .replay-ledger-actions button,
+  .replay-ledger .replay-ledger-protection button,
+  .replay-ledger .replay-ledger-protection input,
+  .replay-ledger .replay-ledger-rules > summary {
+    min-height: 44px;
+  }
+
+  .replay-ledger .replay-ledger-rules > summary {
+    align-content: center;
+  }
+}

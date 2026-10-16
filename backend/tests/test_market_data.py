@@ -128,21 +128,6 @@ def test_collector_window_heals_recent_lookback_and_chunks_catchup():
     assert chunk_end == latest + timedelta(minutes=120)
 
 
-def test_collector_runs_each_symbol_then_alert_evaluation(monkeypatch):
-    events: list[str] = []
-    collector = MinuteCollector(settings=SimpleNamespace(collector_symbols=("ES", "NQ")))
-
-    async def no_schema(): return None
-    async def collect(symbol: str, now=None): events.append(f"collect:{symbol}"); return 1
-    async def evaluate(now): events.append("alerts")
-
-    monkeypatch.setattr("app.market.service.ensure_schema", no_schema)
-    monkeypatch.setattr(collector, "collect_symbol", collect)
-    monkeypatch.setattr("app.market.service.evaluate_alert_rules", evaluate)
-    asyncio.run(collector.run_once(datetime(2026, 8, 8, 1, 1, tzinfo=UTC)))
-    assert events == ["collect:ES", "collect:NQ", "alerts"]
-
-
 def test_kline_symbol_allowlist_normalizes_contracts_and_micros():
     from app.market.service import validate_kline_symbol
 
@@ -150,13 +135,14 @@ def test_kline_symbol_allowlist_normalizes_contracts_and_micros():
     assert validate_kline_symbol("NQ") == "NQ"
     assert validate_kline_symbol("ESU6") == "ES"
     assert validate_kline_symbol("ESZ25") == "ES"
-    assert validate_kline_symbol("MNQ") == "NQ"
-    assert validate_kline_symbol("MNQU6") == "NQ"
-    assert validate_kline_symbol("MES") == "ES"
+    assert validate_kline_symbol("MNQ") == "MNQ"
+    assert validate_kline_symbol("MNQU6") == "MNQ"
+    assert validate_kline_symbol("MES") == "MES"
 
-    with pytest.raises(ValueError, match="仅支持 ES、NQ"):
+    assert validate_kline_symbol("MGC") == "MGC"
+    with pytest.raises(ValueError, match="仅支持"):
         validate_kline_symbol("GC")
-    with pytest.raises(ValueError, match="仅支持 ES、NQ"):
+    with pytest.raises(ValueError, match="仅支持"):
         validate_kline_symbol("CLU6")
 
 

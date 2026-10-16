@@ -1,0 +1,56 @@
+.indicator-backdrop { position: fixed; inset: 0; z-index: 1200; background: rgb(15 23 42 / 26%); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.indicator-dialog { box-sizing: border-box; max-width: 100%; max-height: calc(100dvh - 40px); overflow: auto; background: #fff; color: #242a35; border: 1px solid #dde2e8; border-radius: 10px; box-shadow: 0 20px 64px rgb(15 23 42 / 22%); font-size: 13px; }
+.indicator-library { width: 740px; }
+.indicator-display-controls { display:flex; flex-wrap:wrap; gap:12px 20px; margin:0; padding:12px 24px 18px; border:0; }
+.indicator-display-controls legend { padding:0; color:#8791a1; font-size:12px; }
+.indicator-display-controls label { display:inline-flex; align-items:center; gap:6px; margin:0; white-space:nowrap; cursor:pointer; }
+.indicator-display-controls input[type=checkbox] { width:16px; height:16px; min-height:0; margin:0; padding:0; accent-color:#2962ff; }
+.indicator-settings { width: 480px; }
+.indicator-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 22px 24px 18px; }
+.indicator-heading h2 { font-size: 20px; line-height: 1.3; font-weight: 600; margin: 0; }
+.indicator-dialog button { font: inherit; cursor: pointer; }
+.indicator-close { background: none; color: #697586; border: 0; border-radius: 4px; font-size: 25px !important; padding: 0 5px; line-height: 1; }
+.indicator-close:hover { background: #f0f3f8; color: #242a35; }
+.indicator-search { display: flex; gap: 12px; align-items: center; border-top: 1px solid #e8ebef; border-bottom: 1px solid #e8ebef; padding: 15px 24px; }
+.indicator-search svg { width: 20px; height: 20px; flex-shrink: 0; fill: none; stroke: #7c8798; stroke-width: 1.7; }
+.indicator-search input { flex: 1; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; outline: none; font-size: 15px; background: #fff; color: #242a35; }
+.indicator-search:focus-within { box-shadow: inset 0 -2px #2962ff; }
+.indicator-library-body { display: grid; grid-template-columns: 150px minmax(0, 1fr); min-height: 350px; }
+.indicator-categories { border-right: 1px solid #e8ebef; padding: 16px 0; display: flex; flex-direction: column; gap: 3px; }
+.indicator-categories button { padding: 12px 22px; background: none; border: 0; text-align: left; color: #414c5b; }
+.indicator-categories button:hover { background: #f1f5ff; }
+.indicator-categories button[aria-pressed=true] { background: #eaf0ff; color: #2962ff; font-weight: 600; }
+.indicator-results { padding: 12px 0; min-width: 0; }
+.indicator-list-heading { display: flex; justify-content: space-between; padding: 5px 24px 11px 53px; color: #939baa; font-size: 11px; }
+.indicator-library-row { display: flex; align-items: center; padding-left: 12px; }
+.indicator-library-row:hover { background: #f1f5ff; }
+.indicator-star { width: 32px; flex-shrink: 0; align-self: stretch; border: 0; background: transparent; color: #a2aab7; font-size: 20px !important; }
+.indicator-star.is-favorite { color: #e9aa24; }
+.indicator-add { display: flex; justify-content: space-between; align-items: center; text-align: left; min-width: 0; flex: 1; gap: 16px; border: 0; background: transparent; color: #242a35; padding: 12px 24px 12px 9px; }
+.indicator-add:disabled { cursor: default; }
+.indicator-name { display: flex; align-items: baseline; gap: 15px; min-width: 0; }
+.indicator-name strong { width: 48px; flex-shrink: 0; font-weight: 600; }
+.indicator-name > span { color: #5b6575; font-size: 12px; }
+.indicator-row-status { flex-shrink: 0; color: #7c8798; font-size: 11px; }
+.indicator-add:disabled .indicator-row-status { color: #2962ff; }
+.indicator-library-note { padding: 14px 24px; border-top: 1px solid #e8ebef; color: #8791a1; font-size: 12px; }
+.indicator-empty { text-align: center; padding: 44px 16px; color: #7c8798; }
+.indicator-tabs { display: flex; padding: 0 24px; gap: 25px; border-bottom: 1px solid #e8ebef; }
+.indicator-tabs button { border: 0; background: none; padding: 12px 0; color: #6b7584; border-bottom: 2px solid transparent; }
+.indicator-tabs button[aria-selected=true] { color: #2962ff; border-bottom-color: #2962ff; }
+.indicator-setting-body { min-height: 220px; padding: 24px; }
+.indicator-setting-field { display: grid; grid-template-columns: minmax(100px, 1fr) 135px; gap: 20px; align-items: center; margin-bottom: 17px; color: #4b5565; }
+.indicator-setting-field input, .indicator-setting-field select { box-sizing: border-box; width: 100%; min-width: 0; height: 34px; background: #fff; border: 1px solid #ccd3df; border-radius: 5px; padding: 5px 9px; color: #242a35; }
+.indicator-setting-field input[type=color] { width: 54px; padding: 4px; justify-self: start; cursor: pointer; }
+.indicator-help { font-size: 12px; color: #8791a1; line-height: 1.7; margin: 16px 0 0; }
+.indicator-timeframes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px 16px; margin-top: 24px; }
+.indicator-timeframes label { display: flex; gap: 9px; align-items: center; min-width: 0; }
+.indicator-dialog .indicator-timeframes input[type=checkbox] { width: 16px; height: 16px; min-height: 0; flex-shrink: 0; margin: 0; padding: 0; accent-color: #2962ff; }
+.indicator-footer { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 16px 24px; border-top: 1px solid #e8ebef; }
+.indicator-footer span { flex: 1; }
+.indicator-footer button { background: #fff; color: #414c5b; border: 1px solid #ccd3df; border-radius: 5px; padding: 8px 15px; }
+.indicator-footer .indicator-reset { border-color: transparent; padding-left: 0; }
+.indicator-footer .indicator-apply { background: #2962ff; border-color: #2962ff; color: #fff; }
+.indicator-error { padding: 0 24px 14px; color: #b42318; line-height: 1.6; }
+.indicator-dialog button:focus-visible, .indicator-setting-field input:focus-visible, .indicator-setting-field select:focus-visible { outline: 2px solid #2962ff; outline-offset: 2px; }
+@media (max-width: 540px) { .indicator-backdrop { padding: 12px; } .indicator-dialog { max-height: calc(100dvh - 24px); } .indicator-heading { padding: 18px 16px; } .indicator-search { padding: 14px 16px; } .indicator-library-body { grid-template-columns: 90px minmax(0, 1fr); min-height: 320px; } .indicator-categories button { padding: 12px 15px; } .indicator-add { padding-right: 12px; gap: 7px; } .indicator-name { flex-direction: column; gap: 3px; } .indicator-list-heading { padding-right: 12px; } .indicator-setting-field { grid-template-columns: minmax(0, 1fr) 110px; gap: 10px; } .indicator-setting-body { padding: 20px 16px; } .indicator-footer { padding: 15px 16px; } }

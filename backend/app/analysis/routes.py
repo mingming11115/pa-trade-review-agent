@@ -142,6 +142,8 @@ async def update_analysis_task(task_id: uuid.UUID, payload: AnalysisTaskUpdate, 
 @router.post("/analysis-tasks/{task_id}/preview", response_model=SnapshotPreviewPublic)
 async def preview_analysis_task(task_id: uuid.UUID, user: UserPublic = Depends(limit_expensive), repository: AnalysisTaskRepository = Depends(get_analysis_task_repository), provider=Depends(get_analysis_provider), session: AsyncSession = Depends(get_session)) -> SnapshotPreviewPublic:
     task = await repository.get_task(user.id, task_id)
+    if task.kind == "replay_review":
+        raise AppError("replay_analysis_entry", "请从回放记录查看或重试此分析", 409)
     if task.kind == "review":
         selected_ids = [uuid.UUID(value) for value in task.config_json["selected_trade_ids"]]
         trades = list((await session.scalars(select(Trade).where(Trade.id.in_(selected_ids)))).all())
@@ -171,6 +173,8 @@ async def start_analysis_task_run(
     session: AsyncSession = Depends(get_session),
 ) -> list[AnalysisRunStartItem]:
     task = await repository.get_task(user.id, task_id)
+    if task.kind == "replay_review":
+        raise AppError("replay_analysis_entry", "请从回放记录查看或重试此分析", 409)
     if task.kind == "review":
         selected_ids = [uuid.UUID(value) for value in task.config_json["selected_trade_ids"]]
         trades = list((await session.scalars(select(Trade).where(Trade.id.in_(selected_ids)))).all())
@@ -258,6 +262,10 @@ async def get_analysis_run(
         terminal_outcome=run.terminal_outcome,
         created_at=run.created_at,
         updated_at=run.updated_at,
+        failure_stage=run.failure_stage,
+        failure_code=run.failure_code,
+        failure_message=run.failure_message,
+        terminal_reason=run.terminal_reason,
         result=payload,
     )
 
