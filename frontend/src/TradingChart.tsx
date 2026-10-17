@@ -29,6 +29,7 @@ import { computePaio } from "./paio";
 import { buildBarLookup, PaioPrimitive, type PaioVisibility } from "./PaioPrimitive";
 import { createChartOverlayContext, type ChartOverlayContext } from "./chartOverlay";
 import { ReplayBarPicker } from "./ReplayBarPicker";
+import { ReplayStartMenu } from "./ReplayStartMenu";
 import { IndicatorPanel, IndicatorSettingsDialog } from "./IndicatorPanel";
 import { IndicatorLegend } from "./IndicatorLegend";
 import { loadIndicatorSettings, saveIndicatorSettings, type IndicatorKey } from "./indicatorSettings";
@@ -154,7 +155,6 @@ export function TradingChart({
   stage2,
   analysisBars,
   timezoneOffsetMinutes = 0,
-  onRangeSelected,
   onNeedHistory,
   onNeedFuture,
   onReplayLoad,
@@ -178,7 +178,6 @@ export function TradingChart({
   analysisBars?: Bar[];
   /** Fixed offset carried by the source K-line timestamps. */
   timezoneOffsetMinutes?: number;
-  onRangeSelected?: (start: string, end: string) => void;
   onNeedHistory?: (start: string, end: string) => void | Promise<void>;
   /** Load bars after the analysis tip so「下一根」can continue. */
   onNeedFuture?: (start: string, end: string) => void | Promise<void>;
@@ -196,6 +195,9 @@ export function TradingChart({
   const replay = useChartReplay(chartKey, period, inputTimezone, onReplayLoad);
   const [replayOpen, setReplayOpen] = useState(false);
   const [replayDate, setReplayDate] = useState("");
+  const [replayDateOpen, setReplayDateOpen] = useState(false);
+  const replayDateInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (replayDateOpen) replayDateInputRef.current?.focus(); }, [replayDateOpen]);
   const [replayNow, setReplayNow] = useState(Date.now);
   const replayMax = new Date(replayNow + inputTimezone * 60000).toISOString().slice(0, 16);
   const replayTime = Date.parse(`${replayDate}Z`) - inputTimezone * 60000;
@@ -212,7 +214,7 @@ export function TradingChart({
   const [barPickerKey, setBarPickerKey] = useState<string | null>(null);
   const selectingBar = replayOpen && !replay.busy && !replayStarting && barPickerKey === barPickerIdentity;
   useEffect(() => { setBarPickerKey(null); }, [barPickerIdentity, replayOpen, replay.busy, replayStarting]);
-  useEffect(() => { setReplayOpen(false); }, [chartKey]);
+  useEffect(() => { setReplayOpen(false); setReplayDateOpen(false); }, [chartKey]);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const overlayBridgeRef = useRef<ReturnType<typeof createChartOverlayContext> | null>(null);
@@ -602,18 +604,6 @@ export function TradingChart({
     });
   }
 
-  function selectVisibleRange() {
-    if (!onRangeSelected) return;
-    if ((replayActive || analysisBars?.length) && visibleBars.length) {
-      onRangeSelected(visibleBars[0].timestamp, visibleBars[visibleBars.length - 1].timestamp);
-      return;
-    }
-    const range = chartRef.current?.timeScale().getVisibleRange();
-    if (!range) return;
-    const toIso = (value: unknown) => new Date(Number(value) * 1000).toISOString();
-    onRangeSelected(toIso(range.from), toIso(range.to));
-  }
-
   function toggleOverlay(key: OverlayKey) {
     setOverlays((current) => ({ ...current, [key]: !current[key] }));
   }
@@ -677,33 +667,36 @@ export function TradingChart({
           <button aria-label="缩小图表" onClick={() => zoom(1.25)} type="button">－</button>
           <button onClick={() => chartRef.current && resetRange(chartRef.current, visibleBars.length, locked)} type="button">重置</button>
           </div>
-          {onRangeSelected && <button onClick={selectVisibleRange} type="button">使用可视区间</button>}
         </div>
       </div>
       {replayOpen && <div className="chart-replay-panel" role="group" aria-label="K 线回放">
-        <button type="button" disabled={replay.busy || replayStarting || visibleBars.length === 0} aria-pressed={selectingBar} onClick={() => {
-          replay.setPlaying(false);
-          setBarPickerKey(selectingBar ? null : barPickerIdentity);
-        }}>{selectingBar ? '取消选择' : '选择 K 线'}</button>
-        <label>开始时间 <input aria-label="回放开始时间" type="datetime-local" max={replayMax} value={replayDate} onChange={event => setReplayDate(event.target.value)} /></label>
-        <label>输入时区 <select aria-label="回放输入时区" disabled={replay.busy} value={inputTimezone} onChange={event => {
-          const nextOffset = Number(event.target.value);
-          const parsed = Date.parse(`${replayDate}Z`);
-          if (Number.isFinite(parsed)) setReplayDate(new Date(parsed + (nextOffset - inputTimezone) * 60000).toISOString().slice(0, 16));
-          setInputTimezone(nextOffset);
-        }}>
-          <option value={timezoneOffsetMinutes}>图表时间 UTC{timezoneOffsetMinutes >= 0 ? "+" : ""}{timezoneOffsetMinutes / 60}</option>
-          {timezoneOffsetMinutes !== 480 && <option value={480}>北京时间 UTC+8</option>}
-        </select></label>
+        <ReplayStartMenu disabled={replay.busy || replayStarting} barDisabled={visibleBars.length === 0}
+          randomDisabled={Boolean(replayStartDisabled)}
+          randomTitle={onStartTradingReplay ? "从当前品种已存的本地行情中随机选择回放起点" : "从 2023 年 1 月 1 日至今随机选择当前品种的回放起点"}
+          onBar={() => { replay.setPlaying(false); setReplayDateOpen(false); setBarPickerKey(barPickerIdentity); }}
+          onDate={() => { setBarPickerKey(null); setReplayDateOpen(true); }}
+          onRandom={() => {
+            setBarPickerKey(null); setReplayDateOpen(false);
+            if (onStartTradingReplay) { onStartTradingReplay(); return; }
+            void replay.startRandom().then(time => {
+              if (time !== undefined) setReplayDate(new Date(time + inputTimezone * 60000).toISOString().slice(0, 16));
+            });
+          }} />
+        {selectingBar && <button type="button" onClick={() => setBarPickerKey(null)}>取消选择</button>}
+        {replayDateOpen ? <div className="replay-date-selection">
+          <label>开始时间 <input ref={replayDateInputRef} aria-label="回放开始时间" type="datetime-local" max={replayMax} value={replayDate} onChange={event => setReplayDate(event.target.value)} /></label>
+          <label>输入时区 <select aria-label="回放输入时区" disabled={replay.busy} value={inputTimezone} onChange={event => {
+            const nextOffset = Number(event.target.value);
+            const parsed = Date.parse(`${replayDate}Z`);
+            if (Number.isFinite(parsed)) setReplayDate(new Date(parsed + (nextOffset - inputTimezone) * 60000).toISOString().slice(0, 16));
+            setInputTimezone(nextOffset);
+          }}>
+            <option value={timezoneOffsetMinutes}>图表时间 UTC{timezoneOffsetMinutes >= 0 ? "+" : ""}{timezoneOffsetMinutes / 60}</option>
+            {timezoneOffsetMinutes !== 480 && <option value={480}>北京时间 UTC+8</option>}
+          </select></label>
+        </div> : !replayDateInvalid && <span className="replay-start-summary" aria-label="已选回放起点">起点 {formatChartTime(Math.floor(replayTime / 1000) as UTCTimestamp, inputTimezone, 'full')}</span>}
         {replaySetup}
         <button className={replaySetup ? "primary-action replay-start-action" : undefined} type="button" disabled={replay.busy || replayStarting || replayStartDisabled || replayDateInvalid} onClick={() => { setBarPickerKey(null); if(onStartTradingReplay)onStartTradingReplay(new Date(replayTime).toISOString());else void replay.start(replayDate); }}>{replaySetup ? "开始回放" : "从此处回放"}</button>
-        <button type="button" disabled={replay.busy||replayStarting||replayStartDisabled} title={onStartTradingReplay ? "从当前品种已存的本地行情中随机选择回放起点" : "从 2023 年 1 月 1 日至今随机选择当前品种的回放起点"} onClick={() => {
-          setBarPickerKey(null);
-          if(onStartTradingReplay){onStartTradingReplay();return;}
-          void replay.startRandom().then(time => {
-            if (time !== undefined) setReplayDate(new Date(time + inputTimezone * 60000).toISOString().slice(0, 16));
-          });
-        }}>随机回放</button>
         {replayActive && <>
           <button type="button" disabled={replay.busy} onClick={() => { replay.setPlaying(false); void replay.next(); }}>下一根</button>
           <button type="button" disabled={replay.busy && !replay.playing} onClick={() => replay.setPlaying(!replay.playing)}>{replay.playing ? "暂停" : "播放"}</button>

@@ -1,0 +1,8 @@
+.replay-start-menu { position:relative; flex-shrink:0; }
+.replay-start-menu > [role=menu] { position:absolute; bottom:calc(100% + 6px); left:0; z-index:30; min-width:160px; padding:4px; border:1px solid #dde2e8; border-radius:6px; background:#fff; box-shadow:0 5px 20px #14213d26; }
+.chart-replay-panel .replay-start-menu [role=menuitem] { display:block; width:100%; padding:8px 12px; border:0; border-radius:3px; text-align:left; background:transparent; white-space:nowrap; }
+.chart-replay-panel .replay-start-menu [role=menuitem]:hover,
+.chart-replay-panel .replay-start-menu [role=menuitem]:focus-visible { background:#eef3ff; outline:0; }
+.chart-replay-panel .replay-start-menu [role=menuitem]:disabled { color:#9299a4; background:transparent; }
+.replay-start-summary { color:#6b7584; font-size:12px; }
+.replay-date-selection { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }

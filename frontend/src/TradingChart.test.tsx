@@ -23,6 +23,14 @@ vi.mock('lightweight-charts', () => ({
   }),
 }));
 const bars: Bar[] = [0, 1, 2].map(hour => ({ timestamp: `2026-01-01T0${hour}:00:00Z`, open: 1, high: 2, low: 1, close: 2, volume: 1 }));
+function startChoice(name: string) {
+  if (!screen.queryByRole('menu', { name: '回放起点方式' })) fireEvent.click(screen.getByRole('button', { name: '选择起点' }));
+  return screen.getByRole('menuitem', { name });
+}
+function dateInput() {
+  if (!screen.queryByLabelText('回放开始时间')) fireEvent.click(startChoice('选择日期…'));
+  return screen.getByLabelText('回放开始时间');
+}
 describe('replay chart controls', () => {
   beforeEach(() => {
     const values = new Map<string, string>();
@@ -30,12 +38,30 @@ describe('replay chart controls', () => {
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   });
   afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
+  it('groups all replay start choices in one menu and expands dates only when requested', () => {
+    render(<TradingChart bars={bars} chartKey="unified-start" onStartTradingReplay={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
+    expect(screen.queryByLabelText('回放开始时间')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '随机回放' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '选择起点' }));
+    expect(screen.getAllByRole('menuitem')).toHaveLength(3);
+    fireEvent.click(screen.getByRole('menuitem', { name: '选择日期…' }));
+    expect(screen.getByLabelText('回放开始时间')).toBeInTheDocument();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '选择起点' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '选择 K 线' }));
+    expect(screen.queryByLabelText('回放开始时间')).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'K 线回放起点选择区' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '选择起点' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '选择日期…' }));
+    expect(screen.queryByRole('region', { name: 'K 线回放起点选择区' })).not.toBeInTheDocument();
+  });
   it('previews the selected bar and starts server replay exactly at its opening instant', () => {
     const start = vi.fn();
     render(<TradingChart bars={bars} chartKey="pick-bar" period="1h" timezoneOffsetMinutes={480} onStartTradingReplay={start} />);
     fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
-    expect(screen.getByRole('button', { name: '随机回放' })).toHaveAttribute('title', '从当前品种已存的本地行情中随机选择回放起点');
-    fireEvent.click(screen.getByRole('button', { name: '选择 K 线' }));
+    expect(startChoice('随机 K 线')).toHaveAttribute('title', '从当前品种已存的本地行情中随机选择回放起点');
+    fireEvent.click(startChoice('选择 K 线'));
     const picker = screen.getByRole('region', { name: 'K 线回放起点选择区' });
     fireEvent.mouseMove(picker, { clientX: 105, clientY: 150 });
     expect(screen.getByRole('status')).toHaveTextContent('2026-01-01 09:00');
@@ -46,16 +72,16 @@ describe('replay chart controls', () => {
     fireEvent.click(picker, { clientX: 105, clientY: 150 });
     expect(start).toHaveBeenCalledExactlyOnceWith('2026-01-01T01:00:00.000Z');
     expect(screen.queryByRole('region', { name: 'K 线回放起点选择区' })).not.toBeInTheDocument();
-    expect(screen.getByLabelText('回放开始时间')).toHaveValue('2026-01-01T09:00');
+    expect(dateInput()).toHaveValue('2026-01-01T09:00');
   });
   it('waits for confirmation after choosing a trading replay start so settings can be reviewed', () => {
     const start = vi.fn();
     render(<TradingChart bars={bars} chartKey="confirm-bar" period="1h" onStartTradingReplay={start} replaySetup={<p>初始资金</p>} />);
     fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
-    fireEvent.click(screen.getByRole('button', { name: '选择 K 线' }));
+    fireEvent.click(startChoice('选择 K 线'));
     fireEvent.click(screen.getByRole('region', { name: 'K 线回放起点选择区' }), { clientX: 100, clientY: 100 });
     expect(start).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('回放开始时间')).toHaveValue('2026-01-01T01:00');
+    expect(dateInput()).toHaveValue('2026-01-01T01:00');
     expect(screen.queryByRole('region', { name: 'K 线回放起点选择区' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '开始回放' }));
     expect(start).toHaveBeenCalledExactlyOnceWith('2026-01-01T01:00:00.000Z');
@@ -64,7 +90,7 @@ describe('replay chart controls', () => {
     const start = vi.fn();
     render(<TradingChart bars={bars} chartKey="invalid-bar" period="1h" onStartTradingReplay={start} />);
     fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
-    fireEvent.click(screen.getByRole('button', { name: '选择 K 线' }));
+    fireEvent.click(startChoice('选择 K 线'));
     const picker = screen.getByRole('region', { name: 'K 线回放起点选择区' });
     fireEvent.mouseMove(picker, { clientX: 100, clientY: 100 });
     expect(picker.querySelector('.replay-bar-picker-line')).not.toBeNull();
@@ -79,7 +105,7 @@ describe('replay chart controls', () => {
     const start = vi.fn();
     const props = { bars, chartKey: 'cancel-bar', period: '1h' as const, onStartTradingReplay: start };
     const view = render(<TradingChart {...props} />);
-    const pick = () => fireEvent.click(screen.getByRole('button', { name: '选择 K 线' }));
+    const pick = () => fireEvent.click(startChoice('选择 K 线'));
     const expectClosed = () => expect(screen.queryByRole('region', { name: 'K 线回放起点选择区' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
     pick();
@@ -104,24 +130,24 @@ describe('replay chart controls', () => {
     const props = { bars, chartKey: 'busy-bar', period: '1h' as const, onStartTradingReplay: vi.fn() };
     const view = render(<TradingChart {...props} bars={[]} />);
     fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
-    expect(screen.getByRole('button', { name: '选择 K 线' })).toBeDisabled();
+    expect(startChoice('选择 K 线')).toBeDisabled();
     view.rerender(<TradingChart {...props} />);
-    fireEvent.click(screen.getByRole('button', { name: '选择 K 线' }));
+    fireEvent.click(startChoice('选择 K 线'));
     expect(screen.getByRole('region', { name: 'K 线回放起点选择区' })).toBeInTheDocument();
     view.rerender(<TradingChart {...props} replayStarting />);
-    expect(screen.getByRole('button', { name: '选择 K 线' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '选择起点' })).toBeDisabled();
     expect(screen.queryByRole('region', { name: 'K 线回放起点选择区' })).not.toBeInTheDocument();
     expect(props.onStartTradingReplay).not.toHaveBeenCalled();
   });
   it('uses the same selected opening instant for the local replay loader in a non-UTC chart', async () => {
     render(<TradingChart bars={bars} chartKey="local-bar" period="1h" timezoneOffsetMinutes={-300} onReplayLoad={async () => bars} />);
     fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
-    fireEvent.click(screen.getByRole('button', { name: '选择 K 线' }));
+    fireEvent.click(startChoice('选择 K 线'));
     fireEvent.click(screen.getByRole('region', { name: 'K 线回放起点选择区' }), { clientX: 100, clientY: 100 });
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '播放' })).toBeInTheDocument();
       expect(chart.candles.setData.mock.lastCall?.[0]).toHaveLength(2);
-      expect(screen.getByLabelText('回放开始时间')).toHaveValue('2025-12-31T20:00');
+      expect(dateInput()).toHaveValue('2025-12-31T20:00');
     });
   });
   it('renders a stable overlay context next to the canvas after chart initialization', () => {
@@ -171,11 +197,11 @@ describe('replay chart controls', () => {
     try {
       render(<TradingChart bars={bars} chartKey="random" period="1h" timezoneOffsetMinutes={480} onReplayLoad={async () => [first]} />);
       fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
-      fireEvent.click(screen.getByRole('button', { name: '随机回放' }));
+      fireEvent.click(startChoice('随机 K 线'));
       await waitFor(() => {
         expect(screen.getByRole('button', { name: '播放' })).toBeInTheDocument();
         expect(chart.candles.setData.mock.lastCall?.[0]).toHaveLength(1);
-        expect(screen.getByLabelText('回放开始时间')).toHaveValue('2023-01-01T08:00');
+        expect(dateInput()).toHaveValue('2023-01-01T08:00');
       });
       expect(screen.queryByRole('button', { name: '上一根' })).not.toBeInTheDocument();
     } finally { vi.restoreAllMocks(); }
@@ -184,9 +210,9 @@ describe('replay chart controls', () => {
     const load = vi.fn().mockResolvedValue(bars);
     render(<TradingChart bars={bars} chartKey="timezone" period="1h" timezoneOffsetMinutes={-300} onReplayLoad={load} />);
     fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
-    fireEvent.change(screen.getByLabelText('回放开始时间'), { target: { value: '2025-12-31T20:00' } });
+    fireEvent.change(dateInput(), { target: { value: '2025-12-31T20:00' } });
     fireEvent.change(screen.getByLabelText('回放输入时区'), { target: { value: '480' } });
-    expect(screen.getByLabelText('回放开始时间')).toHaveValue('2026-01-01T09:00');
+    expect(dateInput()).toHaveValue('2026-01-01T09:00');
     fireEvent.click(screen.getByRole('button', { name: '从此处回放' }));
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '播放' })).toBeInTheDocument();
@@ -199,7 +225,7 @@ describe('replay chart controls', () => {
     const view = render(<TradingChart bars={bars} chartKey="limit" period="1h" timezoneOffsetMinutes={-300} onReplayLoad={async () => bars} />);
     try {
       fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
-      const input = screen.getByLabelText('回放开始时间') as HTMLInputElement;
+      const input = dateInput() as HTMLInputElement;
       expect(input.max).toBe('2026-10-01T21:00');
       fireEvent.change(input, { target: { value: '2026-10-01T21:01' } });
       expect(input.validity.rangeOverflow).toBe(true);
@@ -220,7 +246,7 @@ describe('replay chart controls', () => {
     expect(chart.markers.mock.lastCall?.[0]).toHaveLength(1);
     expect(screen.queryByRole('button', { name: '上一根' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
-    fireEvent.change(screen.getByLabelText('回放开始时间'), { target: { value: '2026-01-01T01:00' } });
+    fireEvent.change(dateInput(), { target: { value: '2026-01-01T01:00' } });
     chart.candles.createPriceLine.mockClear();
     fireEvent.click(screen.getByRole('button', { name: '从此处回放' }));
     await waitFor(() => {

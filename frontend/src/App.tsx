@@ -1313,12 +1313,6 @@ export function ReviewWorkbenchShell() {
   }
 
 
-  function useVisibleRange(start: string, end: string) {
-    const startValue = new Date(start).toISOString().slice(0, 16);
-    const endValue = new Date(end).toISOString().slice(0, 16);
-    setSessions((current) => ({ ...current, [mode]: { ...current[mode], start: startValue, end: endValue } }));
-  }
-
   async function loadMoreHistory(start: string, end: string) {
     if (!session.symbol || !session.period) return;
     const period = session.period as Period;
@@ -2146,7 +2140,6 @@ export function ReviewWorkbenchShell() {
                       const market = await getMarketBars(session.symbol, session.period as Period, start, end, signal, false, "history_prefetch");
                       return market.bars;
                     }}
-                    onRangeSelected={useVisibleRange}
                     onPeriodChange={(nextPeriod) => {
                       updateSession("period", nextPeriod);
                       setFeed((current) => ({

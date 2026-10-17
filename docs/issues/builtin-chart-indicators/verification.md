@@ -65,3 +65,10 @@
 - 构建检查曾因新测试误用了 Testing Library 不支持的 exact 参数失败；移除该参数后重新运行全量与构建。
 - 最终 `make frontend-test` → 36 文件 / 331 passed，日志 `/private/tmp/pa-indicator-placement-tests-final.log`。最终 `make build` → 成功，日志 `/private/tmp/pa-indicator-placement-build-final.log`，保留现有 chunk 大小提示。
 - 浏览器实测：回放顶部不再显示四个复选框；指标库“图表显示”统一呈现 EMA20/Gap/K#/H/L。全部关闭后均变未选中，图上 EMA 标为已隐藏，均线、Gap、K#、H/L 消失；关闭面板不触发保存退出，重新打开状态保持，验证后恢复四项开启。
+
+
+## 2026-10-16 移除使用可视区间
+
+- 按用户明确指定移除按钮，同时删除 TradingChart 的 onRangeSelected/selectVisibleRange 与 App 的 useVisibleRange 接线；检索确认无其他调用方。
+- 浏览器普通图表验证：工具栏显示指标、回放、放大、缩小和重置，不再显示使用可视区间。
+- `make frontend-test`：36 文件 / 331 passed；`make build` 成功，保留现有 chunk 体积提示。日志 `/private/tmp/pa-remove-visible-range-tests.log`、`/private/tmp/pa-remove-visible-range-build.log`。

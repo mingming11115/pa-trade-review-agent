@@ -220,6 +220,8 @@ it('uses only the current replay prefix, advances indicators and restores them o
   window.localStorage.setItem('pa.chart.indicators.v1', JSON.stringify(settings()));
   render(<TradingChart bars={bars} chartKey="indicator-replay" period="1h" onReplayLoad={async () => bars} />);
   fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
+  fireEvent.click(screen.getByRole('button', { name: '选择起点' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: '选择日期…' }));
   fireEvent.change(screen.getByLabelText('回放开始时间'), { target: { value: '2026-01-01T02:00' } });
   fireEvent.click(screen.getByRole('button', { name: '从此处回放' }));
   await waitFor(() => expect(screen.getByRole('button', { name: '播放' })).toBeInTheDocument());

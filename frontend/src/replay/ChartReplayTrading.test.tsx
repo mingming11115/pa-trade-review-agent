@@ -17,7 +17,9 @@ beforeEach(()=>{
 afterEach(()=>{cleanup();vi.unstubAllGlobals();vi.useRealTimers();});
 const session={id:'one',symbol:'ES',mode:'training',status:'active',revision:0,config:{instrument:{tick_size:'0.25',multiplier:'50'}},state:{cursor:'2025-01-01T00:00:00Z',last_price:'100',config:{initial_cash:'100000',fee_per_side:'0',slippage_ticks:0},orders:[],position:{quantity:0,average_price:'0',stop_loss:null,take_profit:null},account:{equity:'100000',unrealized_pnl:'0',fees:'0',closed_trades:0,wins:0}}};
 function Harness(){const controller=useReplayTradingController();return <ChartReplayTrading controller={controller} symbol="ES" bars={[]} chartKey="main" period="5m"/>;}
-function start(){fireEvent.click(screen.getByRole('button',{name:/^回放$/}));fireEvent.change(screen.getByLabelText('回放开始时间'),{target:{value:'2025-01-01T00:00'}});fireEvent.click(screen.getByRole('button',{name:'开始回放'}));}
+function replayChoice(name:string){if(!screen.queryByRole('menu',{name:'回放起点方式'}))fireEvent.click(screen.getByRole('button',{name:'选择起点'}));return screen.getByRole('menuitem',{name});}
+function replayDateInput(){if(!screen.queryByLabelText('回放开始时间'))fireEvent.click(replayChoice('选择日期…'));return screen.getByLabelText('回放开始时间');}
+function start(){fireEvent.click(screen.getByRole('button',{name:/^回放$/}));fireEvent.change(replayDateInput(),{target:{value:'2025-01-01T00:00'}});fireEvent.click(screen.getByRole('button',{name:'开始回放'}));}
 function openDetails(tab?:string){fireEvent.click(screen.getByRole('button',{name:'交易明细'}));if(tab)fireEvent.click(screen.getByRole('tab',{name:tab}));}
 
 it.each(['', '0', '-1'])('blocks both replay starts for invalid required capital %s', cash=>{
@@ -27,7 +29,7 @@ it.each(['', '0', '-1'])('blocks both replay starts for invalid required capital
  expect(input).toBeRequired();
  fireEvent.change(input,{target:{value:cash}});
  expect(screen.getByRole('button',{name:'开始回放'})).toBeDisabled();
- expect(screen.getByRole('button',{name:'随机回放'})).toBeDisabled();
+ expect(replayChoice('随机 K 线')).toBeDisabled();
  expect(screen.getByText('请输入大于 0 的初始资金。')).toBeVisible();
 });
 
@@ -40,7 +42,7 @@ it('starts with positive fractional capital and no optional targets',async()=>{
  render(<Harness/>);
  fireEvent.click(screen.getByRole('button',{name:/^回放$/}));
  fireEvent.change(screen.getByLabelText('初始资金 USD'),{target:{value:'0.50'}});
- fireEvent.change(screen.getByLabelText('回放开始时间'),{target:{value:'2025-01-01T00:00'}});
+ fireEvent.change(replayDateInput(),{target:{value:'2025-01-01T00:00'}});
  fireEvent.click(screen.getByRole('button',{name:'开始回放'}));
  await screen.findByRole('button',{name:'市价买入 BUY'});
  expect(requests[0].config).toMatchObject({initial_cash:'0.50',profit_target:null,loss_limit:null});
@@ -57,7 +59,7 @@ it('sends optional replay profit and loss limits with the training session confi
  fireEvent.click(screen.getByText('选填设置'));
  fireEvent.change(screen.getByLabelText('盈利目标 USD'),{target:{value:'500'}});
  fireEvent.change(screen.getByLabelText('亏损限制 USD'),{target:{value:'250'}});
- fireEvent.change(screen.getByLabelText('回放开始时间'),{target:{value:'2025-01-01T00:00'}});
+ fireEvent.change(replayDateInput(),{target:{value:'2025-01-01T00:00'}});
  fireEvent.click(screen.getByRole('button',{name:'开始回放'}));
  await waitFor(()=>expect(screen.getByRole('button',{name:'市价买入 BUY'})).toBeEnabled());
  expect(requests[0].body.config).toMatchObject({profit_target:'500',loss_limit:'250'});
