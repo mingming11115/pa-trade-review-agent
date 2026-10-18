@@ -64,15 +64,16 @@ function migrateLegacy(value: unknown): IndicatorSettings | null {
 export function isIndicatorVisible(entry: Visibility, chartPeriod?: Period | ''): boolean {
   return entry.enabled && entry.visible && (!chartPeriod || !INDICATOR_PERIODS.includes(chartPeriod) || entry.timeframes.includes(chartPeriod));
 }
-export function loadIndicatorSettings(): IndicatorSettings {
+export function loadIndicatorSettings(storageKey: string = STORAGE_KEY): IndicatorSettings {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey);
     if (raw !== null) { const value: unknown = JSON.parse(raw); return isIndicatorSettings(value) ? value : defaults(); }
+    if (storageKey !== STORAGE_KEY) return loadIndicatorSettings();
     const legacy = window.localStorage.getItem(LEGACY_KEY);
     return legacy ? migrateLegacy(JSON.parse(legacy)) ?? defaults() : defaults();
   } catch { return defaults(); }
 }
-export function saveIndicatorSettings(settings: IndicatorSettings): void {
-  try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); }
+export function saveIndicatorSettings(settings: IndicatorSettings, storageKey: string = STORAGE_KEY): void {
+  try { window.localStorage.setItem(storageKey, JSON.stringify(settings)); }
   catch { /* A storage restriction must not block chart interaction. */ }
 }

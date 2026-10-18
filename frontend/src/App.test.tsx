@@ -8,9 +8,9 @@ const { chartSpy } = vi.hoisted(() => ({
 }));
 
 vi.mock("./TradingChart", () => ({
-  TradingChart: ({ bars, markers = [], timezoneOffsetMinutes, onStartTradingReplay }: { onStartTradingReplay?:(start?:string)=>void; bars: Array<unknown>; markers?: Array<unknown>; timezoneOffsetMinutes?: number }) => {
-    chartSpy({ bars, markers, timezoneOffsetMinutes });
-    return <><div aria-label="K 线图" data-bars={bars.length} data-markers={markers.length} role="img" /><IndicatorPanel settings={DEFAULT_INDICATOR_SETTINGS} onChange={()=>{}} />{onStartTradingReplay&&<button onClick={()=>onStartTradingReplay("2025-01-01T00:00:00Z")}>从此处回放</button>}</>;
+  TradingChart: ({ bars, markers = [], timezoneOffsetMinutes, onStartTradingReplay, showToolbar = true }: { showToolbar?: boolean; onStartTradingReplay?:(start?:string)=>void; bars: Array<unknown>; markers?: Array<unknown>; timezoneOffsetMinutes?: number }) => {
+    if (showToolbar) chartSpy({ bars, markers, timezoneOffsetMinutes });
+    return <><div aria-label={showToolbar ? "K 线图" : "辅助 K 线图"} data-bars={bars.length} data-markers={markers.length} role="img" />{showToolbar && <IndicatorPanel settings={DEFAULT_INDICATOR_SETTINGS} onChange={()=>{}} />}{onStartTradingReplay&&<button onClick={()=>onStartTradingReplay("2025-01-01T00:00:00Z")}>从此处回放</button>}</>;
   },
 }));
 
@@ -65,9 +65,10 @@ describe("App", () => {
     await waitFor(() => expect(screen.getByLabelText("K 线图")).toHaveAttribute("data-bars", "2"));
     expect(screen.getByText(/显示最近已有行情/)).toHaveTextContent("2026-10-02 15:55");
     expect(screen.getByRole("button", { name: "从此处回放" })).toBeEnabled();
-    expect(ranges).toHaveLength(2);
-    expect(ranges[1].searchParams.get("start")).toBe("2026-10-02T14:20:00.000Z");
-    expect(ranges[1].searchParams.get("include_partial")).toBe("true");
+    const primaryRanges = ranges.filter(range => range.searchParams.get("period") === "5m");
+    expect(primaryRanges).toHaveLength(2);
+    expect(primaryRanges[1].searchParams.get("start")).toBe("2026-10-02T14:20:00.000Z");
+    expect(primaryRanges[1].searchParams.get("include_partial")).toBe("true");
   });
 
   it("keeps replay accessible when no stored candles are available", async () => {

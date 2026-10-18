@@ -23,6 +23,8 @@ export async function replayRequest<T>(controller:AbortController, milliseconds:
 export function useReplaySession(id:string,initialPeriod:Period='1m') {
   const [session,setSession] = useState<ReplaySession|null>(null);
   const [bars,setBars] = useState<Bar[]>([]);
+  const [barsByPeriod,setBarsByPeriod] = useState<Partial<Record<Period,Bar[]>>>({});
+  const [dataCursor,setDataCursor] = useState<string>();
   const [events,setEvents] = useState<ReplayEvents>({items:[],next_offset:null});
   const [period,setPeriod] = useState<Period>(initialPeriod);
   const [observedCursor,setObservedCursor] = useState<string|undefined>();
@@ -43,6 +45,7 @@ export function useReplaySession(id:string,initialPeriod:Period='1m') {
   const observerRef = useRef(observedCursor); observerRef.current=observedCursor;
   const readyRef=useRef(false);
   const historyLimit=useRef(120);
+  const displayPeriods=useRef<Period[]>([]);
   useEffect(()=>{
     if(!loading)return;
     const started=Date.now(),timer=window.setInterval(()=>setLoadingSeconds(Math.floor((Date.now()-started)/1000)),1000);
@@ -53,7 +56,12 @@ export function useReplaySession(id:string,initialPeriod:Period='1m') {
     const s = current ?? await getReplaySession(id,signal);
     if(token!==generation.current || signal.aborted) return;
     setSession(s);sessionRef.current=s;
-    const [b, first] = await Promise.all([getReplayBars(id,periodRef.current,observerRef.current,signal,historyLimit.current),getReplayEvents(id,0,signal)]);
+    const cursor=observerRef.current??s.state.cursor;
+    const periods=[...new Set(displayPeriods.current.length?displayPeriods.current:[periodRef.current])];
+    const [responses, first] = await Promise.all([
+      Promise.all(periods.map(async period=>[period,await getReplayBars(id,period,cursor,signal,historyLimit.current)] as const)),
+      getReplayEvents(id,0,signal),
+    ]);
     const all = {...first,items:[...first.items]};
     let next=first.next_offset;
     while(next!==null) {
@@ -62,7 +70,10 @@ export function useReplaySession(id:string,initialPeriod:Period='1m') {
       all.items.push(...page.items); next=page.next_offset;
     }
     if(token!==generation.current || signal.aborted) return;
-    setBars(b.bars);setEvents(all);setReady(true);readyRef.current=true;
+    if(token!==generation.current || signal.aborted) return;
+    const batch=Object.fromEntries(responses.map(([period,response])=>[period,response.bars])) as Partial<Record<Period,Bar[]>>;
+    setBarsByPeriod(batch);setDataCursor(cursor);
+    setBars(batch[periodRef.current]??batch[periods[0]]??[]);setEvents(all);setReady(true);readyRef.current=true;
   },[id]);
 
   const refresh = useCallback(async () => {
@@ -89,7 +100,7 @@ export function useReplaySession(id:string,initialPeriod:Period='1m') {
   }
 
   useEffect(()=>{
-    setPlaying(false);setSession(null);sessionRef.current=null;setBars([]);setEvents({items:[],next_offset:null});setObservedCursor(undefined);observerRef.current=undefined;pending.current=null;setRetryAvailable(false);setReady(false);readyRef.current=false;historyLimit.current=120;setHistoryExpanded(false);
+    setPlaying(false);setSession(null);sessionRef.current=null;setBars([]);setBarsByPeriod({});setDataCursor(undefined);setEvents({items:[],next_offset:null});setObservedCursor(undefined);observerRef.current=undefined;pending.current=null;setRetryAvailable(false);setReady(false);readyRef.current=false;historyLimit.current=120;setHistoryExpanded(false);
     periodRef.current=initialPeriod;setPeriod(initialPeriod);
     if(id)void refresh();else {setBusy(false);setLoading(false);setError('');working.current=false;}
     return ()=>{generation.current++;request.current?.abort();working.current=false;};
@@ -141,6 +152,14 @@ export function useReplaySession(id:string,initialPeriod:Period='1m') {
     if(working.current)return;
     setPlaying(false);periodRef.current=value;setPeriod(value);await refresh();
   }
-  return {session,bars,events,period,changePeriod,observedCursor,observe,playing,setPlaying,busy,loading,loadingSeconds,historyExpanded,error,retryAvailable,
+  const changeDisplayPeriods=useCallback(async(values:Period[])=>{
+    const unique=[...new Set(values)].slice(0,4);
+    if(unique.join(',')===displayPeriods.current.join(','))return;
+    setPlaying(false);displayPeriods.current=unique;
+    // A pending command will read this latest set before loading its confirmed state.
+    if(pending.current)return;
+    await refresh();
+  },[refresh]);
+  return {session,bars,barsByPeriod,dataCursor,events,period,changePeriod,changeDisplayPeriods,observedCursor,observe,playing,setPlaying,busy,loading,loadingSeconds,historyExpanded,error,retryAvailable,
     command,refresh,cancelLoad,loadMoreHistory,canTrade:ready&&!!session&&session.status==='active'&&!busy&&!observedCursor&&!retryAvailable};
 }

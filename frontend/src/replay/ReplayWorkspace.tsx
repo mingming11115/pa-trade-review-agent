@@ -5,7 +5,7 @@ import { TrainingWorkspace } from './TrainingWorkspace';
 import { HistoricalWorkspace } from './HistoricalWorkspace';
 import { errorText } from './useReplaySession';
 
-export function ReplayWorkspace({mode,initialTradeIds=[],onClose,closeLabel='返回工作台'}:{mode:ReplayMode;initialTradeIds?:string[];onClose:()=>void;closeLabel?:string}) {
+export function ReplayWorkspace({mode,initialTradeIds=[],onClose,closeLabel='返回工作台',userScope='local'}:{mode:ReplayMode;initialTradeIds?:string[];onClose:()=>void;closeLabel?:string;userScope?:string}) {
   const [sessions,setSessions]=useState<ReplaySession[]>([]);
   const [sessionId,setSessionId]=useState<string|null>(null);
   const [trades,setTrades]=useState<Trade[]>([]);
@@ -39,7 +39,7 @@ export function ReplayWorkspace({mode,initialTradeIds=[],onClose,closeLabel='返
     } catch(e){setError(errorText(e));}finally{setBusy(false);}
   }
   return <section className="replay-workspace" aria-label={title}><header className="replay-heading"><div><small>PA / REPLAY</small><h2>{title}</h2></div><div>{sessionId&&<button onClick={()=>setSessionId(null)}>返回场次</button>}<button onClick={onClose}>{closeLabel}</button></div></header>
-    {sessionId?(mode==='training'?<TrainingWorkspace key={sessionId} sessionId={sessionId}/>:<HistoricalWorkspace key={sessionId} sessionId={sessionId}/>):<>
+    {sessionId?(mode==='training'?<TrainingWorkspace key={sessionId} sessionId={sessionId} userScope={userScope}/>:<HistoricalWorkspace key={sessionId} sessionId={sessionId} userScope={userScope}/>):<>
       {error&&<p role="alert">{error}</p>}
       <div className="replay-setup-grid"><form className="replay-create" onSubmit={e=>{e.preventDefault();void create();}}><h3>{mode==='training'?'开始一次训练':'选择交易回放'}</h3><fieldset disabled={busy}>
         <label>品种<select aria-label="回放品种" value={symbol} onChange={e=>{setSymbol(e.target.value);setSelected([]);}}>{['ES','NQ','MES','MNQ','MGC'].map(s=><option key={s}>{s}</option>)}</select></label>

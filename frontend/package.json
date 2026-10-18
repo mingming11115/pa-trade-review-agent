@@ -9,7 +9,9 @@
     "test": "vitest"
   },
   "dependencies": {
+    "@tradingview/lwc-plugin-vertical-line": "1.0.0",
     "lightweight-charts": "^5.2.0",
+    "lightweight-charts-drawing": "0.6.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

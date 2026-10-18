@@ -1,0 +1,16 @@
+/* Shared dark palette for the official chart renderer and PA host controls. */
+.trading-chart-shell[data-chart-theme="dark"] { background:#0f0f0f; color:#dbdbdb; border-color:#2e2e2e; }
+.trading-chart-shell[data-chart-theme="dark"] .trading-chart,
+.trading-chart-shell[data-chart-theme="dark"] .trading-chart-stage { background:#0f0f0f; }
+.trading-chart-shell[data-chart-theme="dark"] .chart-toolbar { background:#0f0f0f; color:#dbdbdb; border-color:#2e2e2e; }
+.trading-chart-shell[data-chart-theme="dark"] .chart-toolbar button { color:#dbdbdb; background:#1e1e1e; border-color:#2e2e2e; box-shadow:none; }
+.trading-chart-shell[data-chart-theme="dark"] .chart-toolbar button:hover { background:#2e2e2e; }
+.trading-chart-shell[data-chart-theme="dark"] .chart-toolbar-hint { color:#8c8c8c; }
+.trading-chart-shell[data-chart-theme="dark"] .indicator-legend-row { background:#0f0f0fe6; }
+.trading-chart-shell[data-chart-theme="dark"] .indicator-legend-row:hover,
+.trading-chart-shell[data-chart-theme="dark"] .indicator-legend-row:focus-within { background:#1e1e1e; border-color:#2e2e2e; }
+.trading-chart-shell[data-chart-theme="dark"] .indicator-legend-row button { color:#dbdbdb; }
+.trading-chart-shell[data-chart-theme="dark"] .indicator-legend-row button:hover { background:#2e2e2e; }
+.trading-chart-shell[data-chart-theme="dark"] .indicator-legend-name span { color:#8c8c8c; }
+.trading-chart-shell[data-chart-theme="dark"] .indicator-legend-collapse,
+.trading-chart-shell[data-chart-theme="dark"] .chart-candle-countdown { color:#dbdbdb; background:#1e1e1ef2; border-color:#2e2e2e; box-shadow:none; }

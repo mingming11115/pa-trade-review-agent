@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { createReplaySession, createTraceId, discardReplay, saveReplay } from '../api';
 import type { Period, ReplayCreate } from '../types';
 import { errorText, replayRequest, useReplaySession } from './useReplaySession';
+import { copyDrawingScope } from '../chartWorkspace/chartDrawings';
 
-export function useReplayTradingController() {
+export function useReplayTradingController(userScope='local') {
  const [id,setId]=useState('');
  const [initialPeriod,setInitialPeriod]=useState<Period>('1m');
  const replay=useReplaySession(id,initialPeriod);
@@ -58,7 +59,8 @@ export function useReplayTradingController() {
     const saveName=name.trim()||`${s.symbol} 回放`;
     if(!previous||previous.id!==s.id||previous.revision!==s.revision||previous.name!==saveName)saveAttempt.current={id:s.id,name:saveName,revision:s.revision,operation:createTraceId()};
     const a=saveAttempt.current!;
-    await saveReplay(a.id,a.name,a.operation,a.revision);
+    const saved=await saveReplay(a.id,a.name,a.operation,a.revision);
+    if(saved.id)copyDrawingScope(`${userScope}:${s.symbol}:replay:${s.id}`,`${userScope}:${s.symbol}:saved:${saved.id}`);
    }
    await discardReplay(s.id,s.revision);
    complete();

@@ -366,3 +366,14 @@ it('shows submission and unknown states, preserving confirmed server prices even
   expect(screen.getByRole('status')).toHaveTextContent('待确认');
   expect(screen.getByRole('button',{name:'拖动 SL'})).toBeDisabled();
 });
+
+it('hides newer position and quotes while keeping disabled controls over an older candle batch',()=>{
+ const t=setup();
+ expect(screen.getByTestId('chart-position-label')).toBeInTheDocument();
+ t.update({stale:true,disabled:true});
+ expect(screen.queryByTestId('chart-position-label')).not.toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'市价买入 BUY'})).toBeDisabled();
+ expect(screen.getByRole('button',{name:'市价买入 BUY'})).not.toHaveTextContent('110.00');
+ t.update({stale:false,disabled:false});
+ expect(screen.getByTestId('chart-position-label')).toBeInTheDocument();
+});

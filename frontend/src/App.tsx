@@ -235,6 +235,7 @@ interface SessionState {
 }
 
 interface WorkbenchData {
+  sourcePeriod: Period;
   resolvedSymbol: string;
   analysis: BasicAnalysis;
   bars: Bar[];
@@ -386,6 +387,7 @@ function toWorkbenchData(result: DemoAnalysisResponse, mode: Mode, loading = fal
   const tradeMarkers = result.trade_markers ?? [];
 
   return {
+    sourcePeriod: result.query.period as Period,
     resolvedSymbol: result.resolved_symbol,
     analysis: result.analysis,
     bars: result.bars,
@@ -425,7 +427,8 @@ export function ReviewWorkbenchShell() {
   const [availableTrades, setAvailableTrades] = useState<Trade[]>([]);
   const [selectedTradeIds, setSelectedTradeIds] = useState<string[]>([]);
   const [orderPickerOpen, setOrderPickerOpen] = useState(false);
-  const replayTrading=useReplayTradingController();
+  const [user, setUser] = useState<UserSession | null>(null);
+  const replayTrading=useReplayTradingController(user?.id??user?.username??'local');
   const replayNavigationRef=useRef(replayTrading);
   replayNavigationRef.current=replayTrading;
   const [replayView, setReplayView] = useState<{mode:'records'|'historical';tradeIds?:string[]}|null>(null);
@@ -463,7 +466,6 @@ export function ReviewWorkbenchShell() {
   const [journalQuery, setJournalQuery] = useState("");
   const [alertRules, setAlertRules] = useState<AlertRule[]>([]);
   const [alerts, setAlerts] = useState<AlertRecord[]>([]);
-  const [user, setUser] = useState<UserSession | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   const [loginName, setLoginName] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -2027,14 +2029,14 @@ export function ReviewWorkbenchShell() {
         </aside>
 
         {replayView?.mode==='records' ? <TradeRecords source={recordSource} onSourceChange={setRecordSource} onClose={()=>setReplayView(null)}>
-          {recordSource==='replay' ? <SavedReplayList embedded onClose={()=>setReplayView(null)} onResume={(id,symbol)=>{setReplayView(null);updateSession('symbol',symbol);replayTrading.attach(id);}} onResult={(taskId,runId)=>{setReplayView(null);void openAnalysisRun(taskId,{id:runId,runId,status:'completed',createdAt:new Date().toISOString()});}}/> :
+          {recordSource==='replay' ? <SavedReplayList userScope={user?.id??user?.username??'local'} embedded onClose={()=>setReplayView(null)} onResume={(id,symbol)=>{setReplayView(null);updateSession('symbol',symbol);replayTrading.attach(id);}} onResult={(taskId,runId)=>{setReplayView(null);void openAnalysisRun(taskId,{id:runId,runId,status:'completed',createdAt:new Date().toISOString()});}}/> :
             <TradeJournal trades={availableTrades} imports={tradeImports} loading={recordsLoading||recordsMutating||loading} error={recordsError} query={journalQuery} onQueryChange={setJournalQuery}
               onRefresh={()=>setRecordsRefresh(value=>value+1)} onImport={()=>fileInputRef.current?.click()} onAdd={()=>void runJournalAction(addManualTrade)}
               onEdit={trade=>void runJournalAction(()=>editJournalTrade(trade))} onDelete={trade=>void runJournalAction(()=>removeJournalTrade(trade))}
               onReview={trade=>{syncReviewSessionFromTrades([trade.id]);setReplayView(null);setWorkbenchMode('review');setMode('historical');}}
               onReplay={trade=>setReplayView({mode:'historical',tradeIds:[trade.id]})} onReplayHistory={()=>setReplayView({mode:'historical'})}/>
           }
-        </TradeRecords> : replayView ? <ReplayWorkspace key={`${replayView.mode}:${replayView.tradeIds?.join(',')??''}`} mode={replayView.mode} initialTradeIds={replayView.tradeIds} closeLabel="返回交易记录" onClose={()=>{setRecordSource('real');setReplayView({mode:'records'});}} /> : <>
+        </TradeRecords> : replayView ? <ReplayWorkspace userScope={user?.id??user?.username??'local'} key={`${replayView.mode}:${replayView.tradeIds?.join(',')??''}`} mode={replayView.mode} initialTradeIds={replayView.tradeIds} closeLabel="返回交易记录" onClose={()=>{setRecordSource('real');setReplayView({mode:'records'});}} /> : <>
         <section className="shell-panel center-panel glass" ref={centerPanelRef}>
           <header className="panel-header">
             <div>
@@ -2128,8 +2130,9 @@ export function ReviewWorkbenchShell() {
                   )}
                   <ChartReplayTrading
                     controller={replayTrading}
+                    userScope={user?.id??user?.username??'local'}
                     symbol={session.symbol}
-                    bars={chartBars}
+                    bars={feed.period===feedPeriod?feed.bars:activeData?.sourcePeriod===feedPeriod?activeData.bars:[]}
                     chartKey={chartKey}
                     locked={chartLocked}
                     markers={activeData?.tradeMarkers}
@@ -2149,9 +2152,9 @@ export function ReviewWorkbenchShell() {
                         lastClosedTs: null,
                         pollError: null,
                       }));
-                      setResults((current) => ({ ...current, [mode]: null }));
                     }}
                     analysisBars={activeData?.bars}
+                    analysisPeriod={activeData?.sourcePeriod as Period | undefined}
                     period={feedPeriod}
                     timezoneOffsetMinutes={chartTimezone.offsetMinutes}
                     stage1={activeData?.stage1}

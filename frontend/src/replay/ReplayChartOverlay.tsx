@@ -22,6 +22,7 @@ interface Props {
   period?: string;
   disabled: boolean;
   hidden: boolean;
+  stale?: boolean;
   contextKey: string;
   pending: boolean;
   quantity: number;
@@ -79,11 +80,11 @@ export function ReplayChartOverlay(props: Props) {
   const [quickTop,setQuickTop] = useState(42);
   const [,setViewport] = useState(0);
   const position = session.state.position;
-  const active = !hidden && !!position.quantity;
+  const active = !hidden && !props.stale && !!position.quantity;
   const unavailable = disabled || hidden || pending || submitting !== null;
   const pane = context.chart.paneSize(0);
   const validQuantity = Number.isInteger(props.quantity) && props.quantity >= 1 && props.quantity <= 100000;
-  const validPrice = session.state.last_price != null && Number.isFinite(Number(session.state.last_price));
+  const validPrice = !props.stale && session.state.last_price != null && Number.isFinite(Number(session.state.last_price));
 
   function endDrag(clearPreview = true) {
     const current = drag.current;

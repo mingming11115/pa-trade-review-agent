@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ChartReplayTrading } from './ChartReplayTrading';
 import { useReplayTradingController } from './useReplayTradingController';
+// Drawing hit-testing/rendering is covered by its own tests and browser acceptance.
+vi.mock('../chartWorkspace/ChartDrawingTools',()=>({ChartDrawingTools:()=>null}));
 // jsdom has no canvas; retain the original chart's controls and isolate its renderer.
 vi.mock('lightweight-charts',()=>({
  CandlestickSeries:'candles',HistogramSeries:'volume',LineSeries:'ema',ColorType:{Solid:'solid'},CrosshairMode:{Normal:0},LineStyle:{Solid:0,Dashed:2},
@@ -79,7 +81,7 @@ it('shows one details tab at a time without recreating the chart when switching 
  const {container}=render(<Harness/>);start();
  await waitFor(()=>expect(screen.getByRole('button',{name:'市价买入 BUY'})).toBeEnabled());
  expect(screen.getByRole('button',{name:'市价卖出 SELL'})).toBeEnabled();
- const canvas=container.querySelector('.trading-chart canvas');
+ const canvas=container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas');
  expect(screen.getByRole('button',{name:'交易明细'})).toHaveAttribute('aria-expanded','false');
  expect(screen.queryByRole('heading',{name:'持仓'})).not.toBeInTheDocument();
  expect(screen.queryByRole('table')).not.toBeInTheDocument();
@@ -94,17 +96,17 @@ it('shows one details tab at a time without recreating the chart when switching 
   expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
   expect(screen.getAllByRole('table')).toHaveLength(1);
   expect(screen.getByRole('table',{name})).toBeVisible();
-  expect(container.querySelector('.trading-chart canvas')).toBe(canvas);
+  expect(container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas')).toBe(canvas);
  }
  fireEvent.click(screen.getByRole('tab',{name:'统计'}));
  expect(screen.getByRole('tab',{name:'统计'})).toHaveAttribute('aria-selected','true');
  expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
  expect(screen.queryByRole('table')).not.toBeInTheDocument();
- expect(container.querySelector('.trading-chart canvas')).toBe(canvas);
+ expect(container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas')).toBe(canvas);
  fireEvent.click(screen.getByRole('button',{name:'交易明细'}));
  expect(screen.queryByRole('tabpanel')).not.toBeInTheDocument();
  expect(screen.queryByRole('table')).not.toBeInTheDocument();
- expect(container.querySelector('.trading-chart canvas')).toBe(canvas);
+ expect(container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas')).toBe(canvas);
  expect(screen.queryByRole('heading',{name:'下单'})).not.toBeInTheDocument();
  expect(screen.queryByLabelText('下单手数')).not.toBeInTheDocument();
 });
@@ -190,7 +192,7 @@ it.each(['close','cancel','escape'] as const)('dismisses an amendment with %s an
  expect(screen.queryByRole('dialog',{name:'图表下单'})).not.toBeInTheDocument();
  expect(screen.queryByLabelText('下单手数')).not.toBeInTheDocument();
  expect(screen.getByRole('button',{name:'市价买入 BUY'})).toBeEnabled();
- fireEvent.contextMenu(container.querySelector('.trading-chart canvas')!,{clientX:100,clientY:205});
+ fireEvent.contextMenu(container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas')!,{clientX:100,clientY:205});
  fireEvent.click(await screen.findByRole('menuitem',{name:/买入.*限价/}));
  expect(screen.getByLabelText('下单手数')).toHaveValue(2);
  expect(screen.getByRole('heading',{name:'下单'})).toBeInTheDocument();
@@ -297,7 +299,7 @@ it('resets the chart view without issuing a trading command or changing the curs
  const {container}=render(<Harness/>);start();
  await waitFor(()=>expect(screen.getByRole('button',{name:'市价买入 BUY'})).toBeEnabled());
  const cursor=screen.getByText(/北京时间 2025/).textContent;
- fireEvent.contextMenu(container.querySelector('.trading-chart canvas')!,{clientX:100,clientY:205});
+ fireEvent.contextMenu(container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas')!,{clientX:100,clientY:205});
  fireEvent.click(await screen.findByRole('menuitem',{name:/Reset/}));
  expect(screen.queryByRole('menu')).not.toBeInTheDocument();
  expect(screen.getByTestId('chart-position-label')).toHaveTextContent('多 2 手');
@@ -446,16 +448,16 @@ it('keeps a confirmed chart close flat when the subsequent ledger read fails',as
 it('keeps the chart visible without flashing a loading notice during a quick next candle',async()=>{
  vi.useFakeTimers();
  let advanced=false;
- let resolveBars:(response:Response)=>void=()=>{};
+ const pendingBars:Array<(response:Response)=>void>=[];
  const bar={timestamp:'2024-12-31T23:55:00Z',open:100,high:101,low:99,close:100,volume:10};
  vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
   if(url.includes('/commands')){advanced=true;return Response.json({...session,revision:1,state:{...session.state,cursor:'2025-01-01T00:05:00Z'}});}
-  if(url.includes('/bars')&&advanced)return new Promise<Response>(resolve=>{resolveBars=resolve;});
+  if(url.includes('/bars')&&advanced)return new Promise<Response>(resolve=>{pendingBars.push(resolve);});
   return Response.json(url.includes('/bars')?{bars:[bar]}:url.includes('/events')?{items:[],next_offset:null}:session);
  }));
  const {container}=render(<Harness/>);start();
  await act(async()=>{});
- const chart=container.querySelector('.trading-chart canvas');
+ const chart=container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas');
  expect(screen.getByRole('button',{name:'下一根'})).toBeEnabled();
  fireEvent.click(screen.getByRole('button',{name:'下一根'}));
  await act(async()=>{});
@@ -463,11 +465,11 @@ it('keeps the chart visible without flashing a loading notice during a quick nex
  expect(screen.queryByRole('status')).not.toBeInTheDocument();
  expect(screen.getByRole('button',{name:'下一根'})).toBeDisabled();
  expect(screen.getByRole('button',{name:'市价买入 BUY'})).toBeDisabled();
- expect(container.querySelector('.trading-chart canvas')).toBe(chart);
- await act(async()=>{resolveBars(Response.json({bars:[bar,{...bar,timestamp:'2025-01-01T00:00:00Z',close:101}]}));});
+ expect(container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas')).toBe(chart);
+ await act(async()=>{pendingBars.forEach(resolve=>resolve(Response.json({bars:[bar,{...bar,timestamp:'2025-01-01T00:00:00Z',close:101}]})));});
  expect(screen.getByRole('button',{name:'下一根'})).toBeEnabled();
  expect(screen.queryByRole('status')).not.toBeInTheDocument();
- expect(container.querySelector('.trading-chart canvas')).toBe(chart);
+ expect(container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas')).toBe(chart);
 });
 
 it('shows a cancellable in-chart notice for a slow refresh while retaining the chart',async()=>{
@@ -480,19 +482,19 @@ it('shows a cancellable in-chart notice for a slow refresh while retaining the c
  }));
  const {container}=render(<Harness/>);start();
  await act(async()=>{});
- const chart=container.querySelector('.trading-chart canvas');
+ const chart=container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas');
  fireEvent.click(screen.getByRole('button',{name:'下一根'}));
  await act(async()=>{});
  await act(async()=>{await vi.advanceTimersByTimeAsync(1100);});
  expect(screen.getByRole('status')).toHaveTextContent('正在加载行情及成交记录');
  expect(container.querySelector('.replay-chart-frame')).toContainElement(screen.getByRole('status'));
- expect(container.querySelector('.trading-chart canvas')).toBe(chart);
+ expect(container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas')).toBe(chart);
  fireEvent.click(screen.getByRole('button',{name:'取消加载'}));
  await act(async()=>{});
  expect(screen.queryByRole('status')).not.toBeInTheDocument();
  expect(screen.getByRole('button',{name:'重试加载'})).toBeEnabled();
  expect(screen.getByRole('button',{name:'市价买入 BUY'})).toBeDisabled();
- expect(container.querySelector('.trading-chart canvas')).toBe(chart);
+ expect(container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas')).toBe(chart);
 });
 
 it('starts trading inside the original chart and prompts on exit',async()=>{
@@ -587,7 +589,7 @@ it('places the right-click order through the existing ledger and keeps one ticke
  const {container}=render(<Harness/>);start();
  await waitFor(()=>expect(screen.getByRole('button',{name:'市价买入 BUY'})).toBeEnabled());
  fireEvent.change(screen.getByLabelText('快捷下单手数'),{target:{value:'2'}});
- fireEvent.contextMenu(container.querySelector('.trading-chart canvas')!,{clientX:100,clientY:205});
+ fireEvent.contextMenu(container.querySelector('.chart-workspace-pane.is-active .trading-chart canvas')!,{clientX:100,clientY:205});
  fireEvent.click(await screen.findByRole('menuitem',{name:/买入.*限价/}));
  expect(screen.getByRole('dialog',{name:'图表下单'})).toBeInTheDocument();
  expect(screen.getByLabelText('限价')).toHaveValue(99.5);

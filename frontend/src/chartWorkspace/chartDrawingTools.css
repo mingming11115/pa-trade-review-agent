@@ -1,0 +1,4 @@
+/* PA placement only; the full drawing UI uses the original plugin demo CSS. */
+.trading-chart-stage:has(.chart-drawing-ui) { margin:46px 0 28px 52px;width:calc(100% - 52px); }
+.chart-drawing-ui { position:absolute;top:-46px;bottom:-28px;left:-52px;right:0;z-index:7;pointer-events:none; }
+.chart-drawing-error { position:absolute;bottom:0;left:8px;z-index:8;padding:3px 5px;color:#fca5a5;background:#451a1a;font-size:11px; }

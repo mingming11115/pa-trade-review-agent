@@ -5,6 +5,53 @@ import { useReplaySession } from './useReplaySession';
 afterEach(()=>{cleanup();vi.unstubAllGlobals();vi.useRealTimers();});
 const session={id:'one',mode:'training',symbol:'ES',status:'active',revision:0,state:{cursor:'2025-01-01T00:00:00Z',orders:[]}};
 
+it('loads all displayed periods at one explicit cursor and publishes one complete batch',async()=>{
+ const requests:string[]=[];
+ let finishHour:(response:Response)=>void=()=>{};
+ let multi=false;
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
+  if(url.includes('/bars')){
+   requests.push(url);
+   if(multi&&url.includes('period=1h'))return new Promise<Response>(resolve=>{finishHour=resolve;});
+   const period=new URL(url,'http://localhost').searchParams.get('period')!;
+   return Response.json({bars:[{timestamp:'2024-12-31T23:00:00Z',open:period==='1m'?1:5,high:6,low:1,close:5,volume:1}]});
+  }
+  return Response.json(url.includes('/events')?{items:[],next_offset:null}:session);
+ }));
+ const {result}=renderHook(()=>useReplaySession('one'));
+ await waitFor(()=>expect(result.current.canTrade).toBe(true));
+ multi=true;
+ act(()=>{void result.current.changeDisplayPeriods(['1m','5m','1h','5m']);});
+ await waitFor(()=>expect(requests.some(url=>url.includes('period=1h'))).toBe(true));
+ expect(result.current.barsByPeriod['5m']).toBeUndefined();
+ expect(result.current.canTrade).toBe(false);
+ await act(async()=>{finishHour(Response.json({bars:[]}));});
+ expect(Object.keys(result.current.barsByPeriod).sort()).toEqual(['1h','1m','5m']);
+ expect(result.current.canTrade).toBe(true);
+ for(const url of requests){expect(new URL(url,'http://localhost').searchParams.get('cursor')).toBe(session.state.cursor);}
+});
+
+it('keeps the prior complete batch when a secondary period fails and pauses playback',async()=>{
+ let fail=false;
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
+  if(url.includes('/bars')){
+   if(fail&&url.includes('period=5m'))throw new TypeError('secondary period unavailable');
+   return Response.json({bars:[]});
+  }
+  return Response.json(url.includes('/events')?{items:[],next_offset:null}:session);
+ }));
+ const {result}=renderHook(()=>useReplaySession('one'));
+ await waitFor(()=>expect(result.current.canTrade).toBe(true));
+ await act(async()=>{await result.current.changeDisplayPeriods(['1m','5m']);});
+ const previous=result.current.barsByPeriod;
+ act(()=>result.current.setPlaying(true));fail=true;
+ await act(async()=>{await result.current.refresh();});
+ expect(result.current.barsByPeriod).toBe(previous);
+ expect(result.current.playing).toBe(false);
+ expect(result.current.canTrade).toBe(false);
+ expect(result.current.error).toContain('secondary period unavailable');
+});
+
 it('starts each refresh at zero seconds so a prior slow read cannot flash its notice',async()=>{
   vi.useFakeTimers();
   let resolveBars:(response:Response)=>void=()=>{};
@@ -215,4 +262,20 @@ it('serializes advance while its network response is outstanding',async()=>{
   await act(async()=>{await result.current.command({type:'advance'});});
   expect(count).toBe(1);
   await act(async()=>{resolveCommand(new Response(JSON.stringify({...session,revision:1})));await inFlight;});
+});
+
+it('retains display changes made during a pending advance for its confirmed batch',async()=>{
+ let finishCommand:(response:Response)=>void=()=>{};const periods:string[]=[];
+ vi.stubGlobal('fetch',vi.fn(async(url:string,options?:RequestInit)=>{
+  if(options?.method==='POST')return new Promise<Response>(resolve=>{finishCommand=resolve;});
+  if(url.includes('/bars')){periods.push(new URL(url,'http://localhost').searchParams.get('period')!);return Response.json({bars:[]});}
+  return Response.json(url.includes('/events')?{items:[],next_offset:null}:session);
+ }));
+ const {result}=renderHook(()=>useReplaySession('one'));
+ await waitFor(()=>expect(result.current.canTrade).toBe(true));periods.length=0;
+ act(()=>{void result.current.command({type:'advance',period:'1m'});});
+ await act(async()=>{await result.current.changeDisplayPeriods(['1m','5m','15m','1h']);});
+ await act(async()=>{finishCommand(Response.json({...session,revision:1}));});
+ expect(periods.sort()).toEqual(['15m','1h','1m','5m']);
+ expect(Object.keys(result.current.barsByPeriod)).toHaveLength(4);
 });

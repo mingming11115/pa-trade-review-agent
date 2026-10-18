@@ -1,0 +1,23 @@
+.chart-workspace { min-width:0; background:#0f0f0f; color:#dbdbdb; }
+.chart-workspace-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:6px; padding:8px 10px; border-bottom:1px solid #2e2e2e; font-size:12px; }
+.chart-workspace-toolbar strong { margin-right:8px; color:#dbdbdb; }
+.chart-workspace[data-layout] .chart-workspace-toolbar button,.chart-workspace[data-layout] .chart-workspace-tabs button { padding:5px 9px; border:1px solid #2e2e2e; border-radius:4px; background:#0f0f0f; color:#dbdbdb; }
+.chart-workspace[data-layout] .chart-workspace-toolbar button[aria-pressed=true],.chart-workspace[data-layout] .chart-workspace-tabs button[aria-pressed=true] { background:#1e2944; color:#82a6ff; border-color:#2962ff; }
+.chart-workspace-toolbar label { display:flex; align-items:center; gap:4px; margin-left:6px; white-space:nowrap; }
+.chart-workspace-loading { color:#8c8c8c; margin-left:auto; }
+.chart-workspace-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:2px; background:#2e2e2e; }
+.chart-workspace[data-layout="1"] .chart-workspace-grid { grid-template-columns:minmax(0,1fr); }
+.chart-workspace-pane { position:relative; min-width:0; background:#0f0f0f; outline:1px solid transparent; outline-offset:-1px; --chart-base-height:280px; }
+.chart-workspace[data-layout="1"] .chart-workspace-pane { --chart-base-height:max(400px,calc(100dvh - 320px)); }
+.chart-workspace-pane.is-active { outline:2px solid #2962ff; z-index:1; }
+.chart-workspace-pane-heading { display:flex; align-items:center; gap:8px; min-height:36px; padding:3px 8px; border-bottom:1px solid #2e2e2e; font-size:12px; }
+.chart-workspace[data-layout] .chart-workspace-pane-heading button { padding:3px 5px; background:transparent; border:0; color:#dbdbdb; }
+.chart-workspace-pane-heading b { margin-left:5px; color:#dbdbdb; }
+.chart-workspace .chart-workspace-pane-heading select { width:64px; margin-left:auto; padding:3px 5px; border:1px solid #2e2e2e; border-radius:4px; background:#1e1e1e; font-size:12px; color:#dbdbdb; }
+.chart-workspace-pane-heading small { color:#e5b65a; white-space:nowrap; }
+.chart-workspace-pane .chart-toolbar { min-height:36px; padding:4px 6px; }
+.chart-workspace-pane .chart-toolbar-actions { gap:4px; flex-wrap:wrap; }
+.chart-workspace-pane .chart-toolbar-hint { display:none; }
+.chart-workspace-tabs { display:flex; gap:6px; padding:5px 10px; }
+.chart-workspace-error { padding:8px 10px; color:#a04e21; background:#fff7e6; font-size:12px; }
+.chart-workspace-error button { margin-left:8px; }

@@ -22,6 +22,7 @@ export interface HistoricalQuery {
 
 export interface Bar {
   timestamp: string;
+  is_partial?: boolean;
   timeframe?: string | null;
   session?: "CME" | "US_EQUITY_RTH" | null;
   day_index?: number | null;

@@ -1,3 +1,4 @@
+import "./chartTheme.css";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   CandlestickSeries,
@@ -165,6 +166,8 @@ export function TradingChart({
   replayStartingSeconds=0,
   onCancelTradingReplay,
   renderOverlay,
+  showToolbar = true,
+  indicatorStorageKey,
 }: {
   bars: Bar[];
   /** Identity for full setData; live merges keep the same key. */
@@ -190,6 +193,9 @@ export function TradingChart({
   onCancelTradingReplay?:()=>void;
   onPeriodChange?: (period: Period) => void;
   renderOverlay?: (context: ChartOverlayContext) => ReactNode;
+  showToolbar?: boolean;
+  indicatorStorageKey?: string;
+  analysisPeriod?: Period;
 }) {
   const [inputTimezone, setInputTimezone] = useState(timezoneOffsetMinutes);
   const replay = useChartReplay(chartKey, period, inputTimezone, onReplayLoad);
@@ -224,7 +230,7 @@ export function TradingChart({
   const indicatorsRef = useRef<ReturnType<typeof createChartIndicators> | null>(null);
   const [indicatorChart, setIndicatorChart] = useState<IChartApi | null>(null);
   const [indicatorSettingsKey, setIndicatorSettingsKey] = useState<IndicatorKey | null>(null);
-  const [indicators, setIndicators] = useState(loadIndicatorSettings);
+  const [indicators, setIndicators] = useState(() => loadIndicatorSettings(indicatorStorageKey));
   const paioRef = useRef<PaioPrimitive | null>(null);
   const markersApiRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
@@ -277,9 +283,9 @@ export function TradingChart({
       autoSize: true,
       height: 460,
       layout: {
-        background: { type: ColorType.Solid, color: "#ffffff" },
-        textColor: "#8290a2",
-        fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif',
+        background: { type: ColorType.Solid, color: "#0f0f0f" },
+        textColor: "#dbdbdb",
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif',
         attributionLogo: false,
       },
       localization: {
@@ -287,16 +293,16 @@ export function TradingChart({
         timeFormatter: (time: Time) => timezoneFormat(time, timezoneOffsetMinutes, "full"),
       },
       grid: {
-        vertLines: { color: "#edf1f6" },
-        horzLines: { color: "#edf1f6" },
+        vertLines: { color: "#1f1f1f" },
+        horzLines: { color: "#1f1f1f" },
       },
-      crosshair: { mode: CrosshairMode.Normal },
+      crosshair: { mode: CrosshairMode.Normal, vertLine: { color: "#9598a1", labelBackgroundColor: "#363a45" }, horzLine: { color: "#9598a1", labelBackgroundColor: "#363a45" } },
       rightPriceScale: {
-        borderColor: "#e6e9ed",
+        borderColor: "#2e2e2e",
         scaleMargins: { top: 0.12, bottom: 0.12 },
       },
       timeScale: {
-        borderColor: "#e6e9ed",
+        borderColor: "#2e2e2e",
         timeVisible: true,
         secondsVisible: false,
         barSpacing: locked ? 9 : 11,
@@ -481,7 +487,7 @@ export function TradingChart({
     paioRef.current?.setVisibility(visibility);
   }, [overlays.gaps, overlays.barIndex, overlays.hl]);
 
-  useEffect(() => { saveIndicatorSettings(indicators); }, [indicators]);
+  useEffect(() => { saveIndicatorSettings(indicators,indicatorStorageKey); }, [indicators,indicatorStorageKey]);
 
   useEffect(() => {
     const series = candleRef.current;
@@ -631,8 +637,8 @@ export function TradingChart({
   }, [closeCountdown, visibleBars]);
 
   return (
-    <div className="trading-chart-shell">
-      <div className="chart-toolbar">
+    <div className="trading-chart-shell" data-chart-theme="dark">
+      {showToolbar && <div className="chart-toolbar">
         {locked && !replayActive && <span className="chart-toolbar-hint">锁定区间</span>}
         <div className="chart-toolbar-actions">
           <IndicatorPanel settings={indicators} onChange={setIndicators} displayControls={<>
@@ -668,7 +674,7 @@ export function TradingChart({
           <button onClick={() => chartRef.current && resetRange(chartRef.current, visibleBars.length, locked)} type="button">重置</button>
           </div>
         </div>
-      </div>
+      </div>}
       {replayOpen && <div className="chart-replay-panel" role="group" aria-label="K 线回放">
         <ReplayStartMenu disabled={replay.busy || replayStarting} barDisabled={visibleBars.length === 0}
           randomDisabled={Boolean(replayStartDisabled)}

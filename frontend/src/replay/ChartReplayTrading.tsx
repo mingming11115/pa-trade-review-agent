@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState, type ComponentProps } from 'react';
 import { TradingChart } from '../TradingChart';
+import { ChartWorkspace } from '../chartWorkspace/ChartWorkspace';
 import type { ReplayCommandInput, ReplayOrder, TradeMarker } from '../types';
 import { OrderTicket, type ChartOrderPlacement, type ChartOrderPrefill } from './OrderTicket';
 import { ReplayTradeDetails } from './ReplayTradeDetails';
 import { ReplayControls } from './ReplayControls';
 import { ReplayExitDialog } from './ReplayExitDialog';
-import { mapReplayMarkers } from './replayActions';
 import type { ReplayTradingController } from './useReplayTradingController';
 import { ReplayChartOverlay, type ChartOrderRequest } from './ReplayChartOverlay';
 import './replayLayout.css';
 
 export { orderLabels } from './ReplayTradeDetails';
-export function ChartReplayTrading({controller:c,symbol,...chart}:ComponentProps<typeof TradingChart>&{controller:ReplayTradingController;symbol:string}) {
+export function ChartReplayTrading({controller:c,symbol,userScope='local',...chart}:ComponentProps<typeof TradingChart>&{controller:ReplayTradingController;symbol:string;userScope?:string}) {
  const r=c.replay,s=r.session;
  const [editing,setEditing]=useState<ReplayOrder>();
  const [chartOrder,setChartOrder]=useState<ChartOrderPlacement & {sessionId:string;revision:number}>();
@@ -19,6 +19,7 @@ export function ChartReplayTrading({controller:c,symbol,...chart}:ComponentProps
  const [chartError,setChartError]=useState('');
  const [quickQuantity,setQuickQuantity]=useState(1);
  const [detailsOpen,setDetailsOpen]=useState(false);
+ const [drawingEditing,setDrawingEditing]=useState(false);
  const chartFrame=useRef<HTMLDivElement>(null);
  const seed=useRef(0),latest=useRef(c);latest.current=c;
  const contextKey=`${c.id}:${s?.revision}:${r.period}:${r.observedCursor??''}`;
@@ -62,10 +63,10 @@ export function ChartReplayTrading({controller:c,symbol,...chart}:ComponentProps
  const visible=fills.filter(f=>!r.observedCursor||Date.parse(f.timestamp)<=Date.parse(r.observedCursor));
  const markers:TradeMarker[]=visible.map(f=>({timestamp:new Date(Date.parse(f.timestamp)-60000).toISOString(),position:f.side==='buy'?'belowBar':'aboveBar',shape:f.side==='buy'?'arrowUp':'arrowDown',color:f.side==='buy'?'#137e61':'#bd493c',text:`${f.side==='buy'?'买':'卖'} ${f.quantity} @${f.price}`}));
  return <div className={`chart-replay-trading${c.id&&s?' chart-replay-trading-active':''}`} data-replay-interactive>
-  {!c.id ? <TradingChart {...chart}
+  {!c.id ? <ChartWorkspace {...chart} symbol={symbol} userScope={userScope}
     onStartTradingReplay={start=>{
      if(!validCash)return;
-     void c.start({mode:'training',symbol,start,random_start:!start,config:{initial_cash:cash,fee_per_side:fee,slippage_ticks:slip,profit_target:profitTarget||null,loss_limit:lossLimit||null}},chart.period||'1m');
+     void c.start({mode:'training',symbol,start,random_start:!start,config:{initial_cash:cash,fee_per_side:fee,slippage_ticks:slip,profit_target:profitTarget||null,loss_limit:lossLimit||null}},'1m');
     }}
     replayStartDisabled={!validCash}
     replayStarting={c.busy} replayStartingSeconds={c.startingSeconds} onCancelTradingReplay={()=>c.requestLeave()}
@@ -84,7 +85,10 @@ export function ChartReplayTrading({controller:c,symbol,...chart}:ComponentProps
     </div>}
    /> : !s ? <div>{r.loading&&<p role="status">正在恢复回放… {r.loadingSeconds} 秒</p>}<button onClick={()=>c.requestLeave()}>退出加载</button></div> : <>
     <div ref={chartFrame} className="replay-chart-frame" aria-busy={r.busy}>
-     <TradingChart bars={r.bars} chartKey={`replay:${c.id}`} period={r.period} locked timezoneOffsetMinutes={chart.timezoneOffsetMinutes} markers={mapReplayMarkers(markers,r.bars)} renderOverlay={context=><ReplayChartOverlay context={context} session={s} period={r.period} disabled={!r.canTrade||c.exitOpen||!!chartOrder} hidden={!!r.observedCursor||s.mode!=='training'} contextKey={contextKey} pending={r.retryAvailable} quantity={quickQuantity} onQuantityChange={setQuickQuantity} onMarketOrder={(side,quantity,expected)=>chartCommand({type:'place_order',kind:'market',side,quantity,reduce_only:false},expected)} onPause={()=>r.setPlaying(false)} onOrder={openChartOrder} onClosePosition={closeChartPosition} onProtection={(input,expected)=>chartCommand({type:'update_protection',...input},expected)}/>}/>
+     <ChartWorkspace symbol={symbol} userScope={userScope} bars={r.bars} chartKey={`replay:${c.id}`} period={r.period} locked timezoneOffsetMinutes={chart.timezoneOffsetMinutes} markers={markers}
+       onDrawingInteractionChange={setDrawingEditing}
+       replay={{id:c.id,cursor:r.observedCursor??s.state.cursor,dataCursor:r.dataCursor,barsByPeriod:r.barsByPeriod,loading:r.loading,disabled:r.busy||r.retryAvailable||c.exitOpen||!!chartOrder,changeDisplayPeriods:r.changeDisplayPeriods,onPause:()=>r.setPlaying(false)}}
+       renderOverlay={context=><ReplayChartOverlay context={context} session={s} period={r.period} stale={!!r.dataCursor&&r.dataCursor!==s.state.cursor} disabled={!r.canTrade||c.exitOpen||!!chartOrder||drawingEditing} hidden={!!r.observedCursor||s.mode!=='training'} contextKey={contextKey} pending={r.retryAvailable} quantity={quickQuantity} onQuantityChange={setQuickQuantity} onMarketOrder={(side,quantity,expected)=>chartCommand({type:'place_order',kind:'market',side,quantity,reduce_only:false},expected)} onPause={()=>r.setPlaying(false)} onOrder={openChartOrder} onClosePosition={closeChartPosition} onProtection={(input,expected)=>chartCommand({type:'update_protection',...input},expected)}/>}/>
      {r.loading&&(!r.bars.length||r.loadingSeconds>=1)&&<p className="replay-loading-status" role="status">正在加载行情及成交记录… {r.loadingSeconds} 秒 · 加载完成前不可下单 <button onClick={r.cancelLoad}>取消加载</button></p>}
     </div>
     <ReplayControls replay={r} compact trailing={<>

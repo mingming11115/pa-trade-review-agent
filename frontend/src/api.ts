@@ -82,7 +82,7 @@ export async function createReplaySession(payload:ReplayCreate, signal?:AbortSig
 export async function getReplaySession(id:string, signal?:AbortSignal):Promise<ReplaySession> {
   return parseResponse(await apiFetch(`/api/v1/replay/sessions/${encodeURIComponent(id)}`, {signal}));
 }
-export async function getReplayBars(id:string, period:Period, cursor?:string, signal?:AbortSignal, limit=500):Promise<{bars:Bar[]}> {
+export async function getReplayBars(id:string, period:Period, cursor?:string, signal?:AbortSignal, limit=500):Promise<{bars:Bar[];cursor?:string;source?:string;next_before?:string|null}> {
   const params = new URLSearchParams({period,limit:String(limit)});
   if(cursor) params.set('cursor',cursor);
   return parseResponse(await apiFetch(`/api/v1/replay/sessions/${encodeURIComponent(id)}/bars?${params}`, {signal}));
