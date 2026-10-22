@@ -3,6 +3,7 @@ import { VerticalLine } from '@tradingview/lwc-plugin-vertical-line';
 import { LineStyle, type MouseEventParams, type Time, type UTCTimestamp } from 'lightweight-charts';
 import type { ChartOverlayContext } from '../chartOverlay';
 import type { Bar, Period } from '../types';
+import { barCloseAtMs } from '../tradingHours';
 import { PERIOD_MINUTES } from '../feed';
 import { getDrawingScope, subscribeDrawingScope, updateDrawing, type DrawingEntry } from './chartDrawings';
 import './chartDrawingTools.css';
@@ -36,7 +37,9 @@ export function OfficialVerticalMarkers({context,scope,period,active,bars=[],cur
    for(const {drawing} of snapshot.drawings){
     if(drawing.kind!=='vertical-line'||drawing.hidden)continue;
     const width=PERIOD_MINUTES[period]*60;
-    const bucket=Math.floor(drawing.points[0].time/width)*width;
+    const time=drawing.points[0].time;
+    const match=latest.current.bars.find(bar=>bar.trading_hours==='RTH'&&Date.parse(bar.timestamp)/1000<=time&&time*1000<barCloseAtMs(bar,period));
+    const bucket=match?Date.parse(match.timestamp)/1000:Math.floor(time/width)*width;
     // Never show an annotation in a neighboring bar across an archive gap.
     if(!latest.current.bars.some(bar=>Date.parse(bar.timestamp)/1000===bucket))continue;
     desired.add(drawing.id);

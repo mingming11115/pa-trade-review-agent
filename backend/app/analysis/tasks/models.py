@@ -10,7 +10,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, Stri
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.core.models import HistoricalQuery, Period
+from app.core.models import HistoricalQuery, Period, TradingHours
 
 
 UTC = timezone.utc
@@ -59,6 +59,7 @@ class AnalysisTaskConfig(BaseModel):
 
     symbol: str = Field(min_length=1, max_length=100)
     period: Period
+    trading_hours: TradingHours = "ETH"
 
     @field_validator("symbol")
     @classmethod
@@ -74,6 +75,7 @@ class ReviewTaskConfig(BaseModel):
 
     selected_trade_ids: list[str] = Field(min_length=1)
     periods: list[Period] = Field(min_length=1)
+    trading_hours: TradingHours = "ETH"
 
 
 class ReplayReviewTaskConfig(BaseModel):
@@ -333,6 +335,7 @@ class EnsureLiveAnalysisTaskInput(BaseModel):
 
     symbol: str = Field(min_length=1, max_length=100)
     period: Period
+    trading_hours: TradingHours = "ETH"
     title: str | None = Field(default=None, max_length=200)
 
     @field_validator("symbol")

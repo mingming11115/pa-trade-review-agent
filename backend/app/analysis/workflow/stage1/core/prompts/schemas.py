@@ -3,11 +3,12 @@ from __future__ import annotations
 
 _BAR_REF: dict = {
     "type": "object",
-    "required": ["bar_timestamp", "timeframe", "session", "day_index"],
+    "required": ["bar_timestamp", "timeframe", "session", "trading_hours", "day_index"],
     "properties": {
         "bar_timestamp": {"type": "string", "format": "date-time"},
         "timeframe": {"type": "string", "minLength": 1},
         "session": {"type": "string", "enum": ["CME", "US_EQUITY_RTH"]},
+        "trading_hours": {"type": "string", "enum": ["ETH", "RTH"]},
         "day_index": {"type": "integer", "minimum": 1},
     },
     "additionalProperties": False,

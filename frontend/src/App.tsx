@@ -15,7 +15,7 @@ import { MoreMenu } from "./MoreMenu";
 import { useDialogFocus } from "./useDialogFocus";
 import { useTypewriterText } from "./useTypewriterText";
 import { barSummaryDisplay, formatBarRange } from "./barDisplay";
-import { ANALYSIS_LOOKBACK_BARS, chartIdentity, closedBars, formatChartTime, lastClosedTs, liveLookbackWindow, LIVE_POLL_MS, mergeBars, PERIOD_MINUTES } from "./feed";
+import { ANALYSIS_LOOKBACK_BARS, chartIdentity, closedBars, formatChartTime, lastClosedTs, liveLookbackWindow, loadHistoryBars, LIVE_POLL_MS, mergeBars, PERIOD_MINUTES } from "./feed";
 import type {
   ApiError,
   Bar,
@@ -26,6 +26,7 @@ import type {
   HistoricalQuery,
   Period,
   TradeMarker,
+  TradingHours,
   TradePreview,
   Trade,
   DebugPreview,
@@ -75,6 +76,7 @@ const defaultComposer = (type: WorkbenchMode): TaskComposer => ({
   description: type === "review" ? "先选择交易，再保存复盘任务。" : "先配置行情区间或实时策略，再执行分析。",
   symbol: type === "review" ? "ES" : "NQ",
   period: type === "review" ? "5m" : "1m",
+  tradingHours: "ETH",
   start: "",
   end: "",
   selectedTradeIds: [],
@@ -220,13 +222,12 @@ function buildWorkbenchPath(workbenchMode: WorkbenchMode, mode: Mode): string {
   return "/analysis/live";
 }
 
-function shouldAutoCollapseLeftSidebar(workbenchMode: WorkbenchMode, mode: Mode): boolean {
-  return workbenchMode === "analysis" && mode === "historical";
-}
-
 interface SessionState {
   symbol: string;
   period: Period | "";
+  /** Selected pane controls analysis; period remains the market feed source. */
+  activePeriod?: Period;
+  tradingHours?: TradingHours;
   start: string;
   end: string;
   includeOrders: boolean;
@@ -236,6 +237,7 @@ interface SessionState {
 
 interface WorkbenchData {
   sourcePeriod: Period;
+  tradingHours: TradingHours;
   resolvedSymbol: string;
   analysis: BasicAnalysis;
   bars: Bar[];
@@ -281,6 +283,7 @@ interface TaskComposer {
   description?: string;
   symbol: string;
   period: Period | "";
+  tradingHours?: TradingHours;
   start: string;
   end: string;
   selectedTradeIds: string[];
@@ -388,6 +391,7 @@ function toWorkbenchData(result: DemoAnalysisResponse, mode: Mode, loading = fal
 
   return {
     sourcePeriod: result.query.period as Period,
+    tradingHours: result.query.trading_hours ?? "ETH",
     resolvedSymbol: result.resolved_symbol,
     analysis: result.analysis,
     bars: result.bars,
@@ -487,6 +491,8 @@ export function ReviewWorkbenchShell() {
   }, [replayView?.mode, recordSource, recordsRefresh]);
   const [decisionView, setDecisionView] = useState<DecisionView>("realtime");
   const [rightPanelPercent, setRightPanelPercent] = useState(44);
+  const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const rightPanelTriggerRef = useRef<HTMLButtonElement>(null);
   const [streamEvents, setStreamEvents] = useState<AnalysisStreamEvent[]>([]);
   const [llmLive, setLlmLive] = useState<{
     stage1: { reasoning: string; content: string };
@@ -495,14 +501,11 @@ export function ReviewWorkbenchShell() {
   const [historyQuery, setHistoryQuery] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState<Record<WorkbenchMode, boolean>>({ review: true, analysis: true });
   const [activeSidebarLeaf, setActiveSidebarLeaf] = useState<SidebarLeafId | null>(null);
-  const [leftSidebarAutoCollapsed, setLeftSidebarAutoCollapsed] = useState(false);
-  const [leftSidebarManualOverride, setLeftSidebarManualOverride] = useState<boolean | null>(null);
-  const [leftSidebarHoverExpanded, setLeftSidebarHoverExpanded] = useState(false);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(true);
+  const leftSidebarRef = useRef<HTMLElement>(null);
+  const leftSidebarTriggerRef = useRef<HTMLButtonElement>(null);
   const [expandedAnalysisTasks, setExpandedAnalysisTasks] = useState<Record<string, boolean>>({});
   const [analysisRunsByTask, setAnalysisRunsByTask] = useState<Record<string, SidebarNavAnalysisRun[]>>({});
-  const effectiveLeftCollapsed = leftSidebarManualOverride !== null
-    ? leftSidebarManualOverride
-    : (leftSidebarAutoCollapsed && !leftSidebarHoverExpanded);
   const [feed, setFeed] = useState<FeedState>(() => emptyFeed("history"));
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedHistoryAsOf, setFeedHistoryAsOf] = useState<string | null>(null);
@@ -575,46 +578,46 @@ export function ReviewWorkbenchShell() {
   }, [mode, workbenchMode]);
 
   useEffect(() => {
-    const autoCollapsed = shouldAutoCollapseLeftSidebar(workbenchMode, mode);
-    setLeftSidebarAutoCollapsed(autoCollapsed);
-    if (!autoCollapsed) {
-      setLeftSidebarHoverExpanded(false);
+    if (!rightPanelOpen) return;
+    function dismissOutside(event: globalThis.PointerEvent) {
+      const target = event.target as Node;
+      if (!rightPanelRef.current?.contains(target) && !rightPanelTriggerRef.current?.contains(target)) {
+        setRightPanelOpen(false);
+      }
     }
-  }, [mode, workbenchMode]);
+    function dismissWithEscape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      setRightPanelOpen(false);
+      rightPanelTriggerRef.current?.focus();
+    }
+    document.addEventListener("pointerdown", dismissOutside);
+    document.addEventListener("keydown", dismissWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside);
+      document.removeEventListener("keydown", dismissWithEscape);
+    };
+  }, [rightPanelOpen]);
 
   useEffect(() => {
-    if (!effectiveLeftCollapsed) {
-      setLeftSidebarHoverExpanded(false);
+    if (leftSidebarCollapsed) return;
+    function dismissOutside(event: globalThis.PointerEvent) {
+      const target = event.target as Node;
+      if (!leftSidebarRef.current?.contains(target) && !leftSidebarTriggerRef.current?.contains(target)) {
+        setLeftSidebarCollapsed(true);
+      }
     }
-  }, [effectiveLeftCollapsed]);
-
-  function syncLeftSidebarAutoCollapse(nextCollapsed: boolean) {
-    setLeftSidebarAutoCollapsed(nextCollapsed);
-    if (leftSidebarManualOverride !== null) return;
-    if (!nextCollapsed) {
-      setLeftSidebarManualOverride(null);
-      setLeftSidebarHoverExpanded(false);
+    function dismissWithEscape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setLeftSidebarCollapsed(true);
+      leftSidebarTriggerRef.current?.focus();
     }
-  }
-
-  function setLeftSidebarManualCollapsed(nextCollapsed: boolean) {
-    setLeftSidebarManualOverride(nextCollapsed);
-    setLeftSidebarHoverExpanded(false);
-  }
-
-  function handleLeftSidebarMouseEnter() {
-    if (!leftSidebarAutoCollapsed || leftSidebarManualOverride !== null) return;
-    setLeftSidebarHoverExpanded(true);
-  }
-
-  function handleLeftSidebarMouseLeave() {
-    if (!leftSidebarAutoCollapsed || leftSidebarManualOverride !== null) return;
-    setLeftSidebarHoverExpanded(false);
-  }
-
-  function handleLeftSidebarToggle() {
-    setLeftSidebarManualCollapsed(!effectiveLeftCollapsed);
-  }
+    document.addEventListener("pointerdown", dismissOutside);
+    document.addEventListener("keydown", dismissWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside);
+      document.removeEventListener("keydown", dismissWithEscape);
+    };
+  }, [leftSidebarCollapsed]);
 
   useEffect(() => {
     getHealth().then((status) => { setHealth(status); if (status.auth_required) void getCurrentUser().then(setUser).catch(() => setLoginOpen(true)); else setUser({ id: null, username: "local", role: "admin", auth_required: false }); }).catch(() => setHealth(null));
@@ -639,11 +642,17 @@ export function ReviewWorkbenchShell() {
   const feedKind: FeedState["kind"] =
     workbenchMode === "review" || mode !== "live" || historyReplayActive ? "history" : "live";
   const feedPeriod = session.period || "";
+  const tradingHours = session.tradingHours ?? "ETH";
+  const feedRevision = useRef(0);
+  // A later chart/analysis choice owns the view even while an earlier run finishes.
+  const hoursSelectionRevision = useRef(0);
 
   useEffect(() => {
+    feedRevision.current++;
     setFeedHistoryAsOf(null);
     setFeedLoading(false);
     if (!session.symbol || !session.period) return;
+    setFeed(current => current.symbol === session.symbol && current.period === session.period && (current.trading_hours ?? "ETH") === tradingHours ? current : {...emptyFeed(feedKind), symbol: session.symbol, period: session.period, trading_hours: tradingHours});
     const period = session.period as Period;
 
     const controller = new AbortController();
@@ -664,10 +673,10 @@ export function ReviewWorkbenchShell() {
       const deadline = window.setTimeout(() => { timedOut = true; request.abort(); }, kind === "live" ? 25000 : 150000);
       try {
         const range = kind === "live"
-          ? liveLookbackWindow(period)
+          ? liveLookbackWindow(period, new Date(), tradingHours)
           : { start: toUtcIso(session.start), end: toUtcIso(session.end) };
         if (kind === "history" && (!session.start || !session.end)) return;
-        let market = await getMarketBars(session.symbol, period, range.start, range.end, request.signal, kind === "live", kind === "live" ? "live_poll" : "history_range");
+        let market = await getMarketBars(session.symbol, period, range.start, range.end, request.signal, kind === "live", kind === "live" ? "live_poll" : "history_range", tradingHours);
         if (cancelled) return;
         let historical = false;
         if (kind === "live" && !market.bars.length && !hasBars && !fallbackChecked) {
@@ -679,12 +688,13 @@ export function ReviewWorkbenchShell() {
           const latest = statuses.find(status => status.symbol === session.symbol)?.latest_closed_at;
           const latestTime = latest ? Date.parse(latest) : NaN;
           if (Number.isFinite(latestTime) && latestTime <= Date.parse(range.start)) {
-            const previous = liveLookbackWindow(period, new Date(latestTime));
-            market = await getMarketBars(session.symbol, period, previous.start, previous.end, request.signal, true, "live_poll");
+            const previous = liveLookbackWindow(period, new Date(latestTime), tradingHours);
+            market = await getMarketBars(session.symbol, period, previous.start, previous.end, request.signal, true, "live_poll", tradingHours);
             historical = market.bars.length > 0;
           }
         }
         if (cancelled) return;
+        if (kind === "live" && tradingHours === "RTH") market = {...market, bars: market.bars.slice(-ANALYSIS_LOOKBACK_BARS)};
         if (market.bars.length) {
           hasBars = true;
           setFeedHistoryAsOf(historical ? market.bars[market.bars.length - 1].timestamp : null);
@@ -695,8 +705,9 @@ export function ReviewWorkbenchShell() {
             kind,
             symbol: session.symbol,
             period: session.period,
+            trading_hours: tradingHours,
             bars,
-            lastClosedTs: lastClosedTs(bars),
+            lastClosedTs: lastClosedTs(closedBars(bars, period, new Date(), session.symbol)),
             pollError: null,
           };
         });
@@ -708,6 +719,7 @@ export function ReviewWorkbenchShell() {
           kind,
           symbol: session.symbol,
           period: session.period,
+          trading_hours: tradingHours,
           pollError: message,
         }));
       } finally {
@@ -728,12 +740,12 @@ export function ReviewWorkbenchShell() {
       controller.abort();
       if (timer) window.clearInterval(timer);
     };
-  }, [feedKind, feedPeriod, feedRefresh, historyReplayActive, mode, session.end, session.period, session.start, session.symbol, workbenchMode]);
+  }, [feedKind, feedPeriod, feedRefresh, historyReplayActive, mode, session.end, session.period, session.start, session.symbol, tradingHours, workbenchMode]);
 
   const currentResult = results[mode];
   const unavailable = health === null;
-  const activeData = currentResult;
-  const chartBars = feed.bars.length
+  const activeData = currentResult && (currentResult.tradingHours ?? "ETH") === tradingHours ? currentResult : null;
+  const chartBars = feed.bars.length && (feed.trading_hours ?? "ETH") === tradingHours
     ? feed.bars
     : activeData?.bars ?? [];
   const emptyStateVisible = chartBars.length === 0 && !activeData;
@@ -752,6 +764,7 @@ export function ReviewWorkbenchShell() {
     symbol: session.symbol,
     period: session.period || "multi",
     feedKind: historyReplayActive ? "history" : feedKind,
+    trading_hours: tradingHours,
     start: session.start,
     end: session.end,
   });
@@ -773,11 +786,13 @@ export function ReviewWorkbenchShell() {
       [mode]: {
         ...current[mode],
         [field]: value,
+        ...((field === "period" || field === "symbol") ? { activePeriod: undefined } : {}),
       },
     }));
   }
 
   function resetCurrentChartState() {
+    feedRevision.current++;
     setFeed((current) => ({
       ...current,
       bars: [],
@@ -787,6 +802,8 @@ export function ReviewWorkbenchShell() {
     setResults((current) => ({ ...current, [mode]: null }));
     setSnapshotAsOf(null);
     setHistoryReplayActive(false);
+    setStreamEvents([]);
+    setLlmLive({stage1:{reasoning:"",content:""},stage2:{reasoning:"",content:""}});
   }
 
   function selectDecisionView(view: DecisionView) {
@@ -813,10 +830,9 @@ export function ReviewWorkbenchShell() {
 
   function resizePanels(clientX: number) {
     if (!Number.isFinite(clientX)) return;
-    const left = centerPanelRef.current?.getBoundingClientRect().left;
     const right = rightPanelRef.current?.getBoundingClientRect().right;
-    if (left == null || right == null || right <= left) return;
-    setRightPanelPercent(clampRightPanelPercent(((right - clientX) / (right - left)) * 100));
+    if (right == null || window.innerWidth <= 0) return;
+    setRightPanelPercent(clampRightPanelPercent(((right - clientX) / window.innerWidth) * 100));
   }
 
   function onSplitPointerDown(event: PointerEvent<HTMLDivElement>) {
@@ -873,11 +889,13 @@ export function ReviewWorkbenchShell() {
             selectedTradeSymbol,
             selectedTradeIds: validSelectedTradeIds,
             period: sourceSession.period,
+            tradingHours: sourceSession.tradingHours ?? "ETH",
           }
         : {
             ...defaultComposer(type),
             symbol: sourceSession.symbol,
             period: sourceSession.period,
+            tradingHours: sourceSession.tradingHours ?? "ETH",
             start: sourceSession.start,
             end: sourceSession.end,
             analysisMode: mode === "live" ? "live" : "range",
@@ -985,10 +1003,11 @@ export function ReviewWorkbenchShell() {
     setError(null);
     try {
       const config = taskComposer.type === "review"
-        ? { selected_trade_ids: taskComposer.selectedTradeIds, periods: [taskComposer.period || "5m"] }
+        ? { selected_trade_ids: taskComposer.selectedTradeIds, periods: [taskComposer.period || "5m"], trading_hours: taskComposer.tradingHours ?? "ETH" }
         : {
             symbol: taskComposer.symbol,
             period: taskComposer.period || "5m",
+            trading_hours: taskComposer.tradingHours ?? "ETH",
           };
       const title = taskComposer.title.trim() || (taskComposer.type === "review" ? "未命名复盘任务" : "未命名分析任务");
       const saved = editingTask
@@ -1047,6 +1066,8 @@ export function ReviewWorkbenchShell() {
   }
 
   async function openAnalysisRun(taskId: string, run: SidebarNavAnalysisRun) {
+    const selectionRevision = ++hoursSelectionRevision.current;
+    setLoading(false);
     setActiveSidebarLeaf(`run:${run.id}`);
     setWorkbenchMode("analysis");
     setSidebarOpen((current) => ({ ...current, analysis: true }));
@@ -1059,6 +1080,7 @@ export function ReviewWorkbenchShell() {
     setError(null);
     try {
       const detail = await getRunDetail(run.runId ?? run.id);
+      if (selectionRevision !== hoursSelectionRevision.current) return;
       const result = detail.result as DemoAnalysisResponse;
       const targetMode: Mode = result.query?.analysis_mode === "realtime" ? "live" : "range";
       const transcript = result.llm_transcript ?? {
@@ -1066,12 +1088,14 @@ export function ReviewWorkbenchShell() {
         stage2: { reasoning: "", content: "" },
       };
       setMode(targetMode);
+      setSessions(current => ({...current, [targetMode]: {...current[targetMode], symbol: result.query.symbol, period: result.query.period, activePeriod: undefined, tradingHours: result.query.trading_hours ?? "ETH", start: toBeijingDateTimeLocal(result.query.start), end: toBeijingDateTimeLocal(result.query.end)}}));
       setResults((current) => ({ ...current, [targetMode]: toWorkbenchData(result, targetMode, false, unavailable) }));
       if (result.bars?.length) {
         setFeed({
           kind: targetMode === "live" ? "live" : "history",
           symbol: result.query.symbol,
           period: result.query.period,
+          trading_hours: result.query.trading_hours ?? "ETH",
           bars: result.bars,
           lastClosedTs: lastClosedTs(result.bars),
           pollError: null,
@@ -1091,17 +1115,20 @@ export function ReviewWorkbenchShell() {
       ]);
       setTaskDetails(null);
     } catch (caught) {
+      if (selectionRevision !== hoursSelectionRevision.current) return;
       if (run.runId) {
-        await restoreHistory(run.runId);
+        await restoreHistory(run.runId, selectionRevision);
         return;
       }
       setError(caught as ApiError);
     } finally {
-      setLoading(false);
+      if (selectionRevision === hoursSelectionRevision.current) setLoading(false);
     }
   }
 
-  async function runSavedTask(task: SidebarTask) {
+  async function runSavedTask(task: SidebarTask, selectionRevision = ++hoursSelectionRevision.current) {
+    if (selectionRevision !== hoursSelectionRevision.current) return;
+    activateTaskWorkspace(task);
     setLoading(true); setError(null);
     setDecisionView("realtime");
     setHistoryReplayActive(false);
@@ -1117,6 +1144,7 @@ export function ReviewWorkbenchShell() {
         : current);
       setTasksByType((current) => ({ ...current, [task.type]: current[task.type].map((item) => item.id === task.id ? { ...item, status: "running" } : item) }));
       const details = await waitForRunsTerminal(executions.map((item) => item.run_id), { intervalMs: 500, timeoutMs: 60_000, signal: controller.signal });
+      if (selectionRevision !== hoursSelectionRevision.current) { void loadAnalysisRuns(task.id); return; }
       const unsuccessful = details.filter((item) => !["completed", "completed_with_warnings"].includes(item.status));
       if (unsuccessful.length) {
         const labels: Record<string, string> = { failed: "分析失败", cancelled: "分析已取消", timed_out: "分析超时", degraded: "分析降级，未生成完整结果" };
@@ -1131,6 +1159,7 @@ export function ReviewWorkbenchShell() {
       }
       await refreshDurableTasks();
       await loadAnalysisRuns(task.id);
+      if (selectionRevision !== hoursSelectionRevision.current) return;
       const detail = details.find((item) => ["completed", "completed_with_warnings"].includes(item.status));
       if (!detail) return;
       const payloadResult = detail.result;
@@ -1147,8 +1176,9 @@ export function ReviewWorkbenchShell() {
         data.notes = payloadResult.review_children.map((child) => `交易 ${child.query.trades?.[0]?.trade_id ?? "—"} · ${child.query.period} · ${child.analysis.direction}`);
         data.detailLabel = `${payloadResult.review_children.length} 个复盘子项完成`;
         setWorkbenchMode("review"); setMode("historical");
+        setSessions(current => ({...current, historical: {...current.historical, symbol: primary.query.symbol, period: primary.query.period, activePeriod: undefined, tradingHours: primary.query.trading_hours ?? "ETH", start: toBeijingDateTimeLocal(primary.query.start), end: toBeijingDateTimeLocal(primary.query.end)}}));
         setResults((current) => ({ ...current, historical: data }));
-        setFeed({ kind: "history", symbol: primary.query.symbol, period: primary.query.period, bars: primary.bars, lastClosedTs: lastClosedTs(primary.bars), pollError: null });
+        setFeed({ kind: "history", symbol: primary.query.symbol, period: primary.query.period, trading_hours: primary.query.trading_hours ?? "ETH", bars: primary.bars, lastClosedTs: lastClosedTs(primary.bars), pollError: null });
         const primaryRunId = primary.run_id;
         if (primaryRunId) {
           setFollowupByAnalysis((current) => ({ ...current, [primaryRunId]: [] }));
@@ -1160,8 +1190,9 @@ export function ReviewWorkbenchShell() {
         setStreamEvents((current) => [...current, { type: "result", stage: "complete", message: "分析完成", result }]);
         const targetMode: Mode = result.query.analysis_mode === "realtime" ? "live" : "range";
         setMode(targetMode);
+        setSessions(current => ({...current, [targetMode]: {...current[targetMode], symbol: result.query.symbol, period: result.query.period, activePeriod: undefined, tradingHours: result.query.trading_hours ?? "ETH", start: toBeijingDateTimeLocal(result.query.start), end: toBeijingDateTimeLocal(result.query.end)}}));
         setResults((current) => ({ ...current, [targetMode]: toWorkbenchData(result, targetMode, false, unavailable) }));
-        setFeed({ kind: targetMode === "live" ? "live" : "history", symbol: result.query.symbol, period: result.query.period, bars: result.bars, lastClosedTs: lastClosedTs(result.bars), pollError: null });
+        setFeed({ kind: targetMode === "live" ? "live" : "history", symbol: result.query.symbol, period: result.query.period, trading_hours: result.query.trading_hours ?? "ETH", bars: result.bars, lastClosedTs: lastClosedTs(result.bars), pollError: null });
         const runIdForFollowup = result.run_id;
         if (runIdForFollowup) {
           setFollowupByAnalysis((current) => ({ ...current, [runIdForFollowup]: [] }));
@@ -1169,10 +1200,10 @@ export function ReviewWorkbenchShell() {
       }
       setExpandedAnalysisTasks((current) => ({ ...current, [task.id]: true }));
       setTaskDetails(null);
-    } catch (caught) { setError(caught as ApiError); }
+    } catch (caught) { if (selectionRevision === hoursSelectionRevision.current) setError(caught as ApiError); }
     finally {
       if (analysisAbortRef.current === controller) analysisAbortRef.current = null;
-      setLoading(false);
+      if (selectionRevision === hoursSelectionRevision.current) setLoading(false);
     }
   }
 
@@ -1190,6 +1221,8 @@ export function ReviewWorkbenchShell() {
         ...sessions.historical,
         symbol: task.config.selectedTradeSymbol || sessions.historical.symbol,
         period: task.config.period,
+        activePeriod: undefined,
+        tradingHours: task.config.tradingHours ?? "ETH",
         start: task.config.start,
         end: task.config.end,
         includeOrders: task.config.includeOrders,
@@ -1209,6 +1242,8 @@ export function ReviewWorkbenchShell() {
       ...sessions[nextMode],
       symbol: task.config.symbol,
       period: task.config.period,
+      activePeriod: undefined,
+      tradingHours: task.config.tradingHours ?? "ETH",
       start: task.config.start,
       end: task.config.end,
       streamEnabled: task.config.streamEnabled,
@@ -1264,10 +1299,12 @@ export function ReviewWorkbenchShell() {
     }
   }
 
-  async function restoreHistory(runId: string) {
+  async function restoreHistory(runId: string, selectionRevision = ++hoursSelectionRevision.current) {
+    if (selectionRevision !== hoursSelectionRevision.current) return;
     setLoading(true);
     try {
       const detail = await getAnalysisDetail(runId);
+      if (selectionRevision !== hoursSelectionRevision.current) return;
       const targetMode: Mode = detail.query.analysis_mode === "realtime" ? "live" : detail.query.analysis_mode === "trade_review" ? "historical" : "range";
       const restoredBars = detail.bars ?? [];
       const asOf = lastClosedTs(restoredBars);
@@ -1283,14 +1320,17 @@ export function ReviewWorkbenchShell() {
           ...current[targetMode],
           symbol: detail.query.symbol,
           period: detail.query.period,
-          start: detail.query.start.slice(0, 16),
-          end: detail.query.end.slice(0, 16),
+          activePeriod: undefined,
+          tradingHours: detail.query.trading_hours ?? "ETH",
+          start: toBeijingDateTimeLocal(detail.query.start),
+          end: toBeijingDateTimeLocal(detail.query.end),
         } as SessionState,
       }));
       setFeed({
         kind: "history",
         symbol: detail.query.symbol,
         period: detail.query.period,
+        trading_hours: detail.query.trading_hours ?? "ETH",
         bars: restoredBars,
         lastClosedTs: asOf,
         pollError: null,
@@ -1311,19 +1351,24 @@ export function ReviewWorkbenchShell() {
       ]);
       setHistoryOpen(false);
       void loadFollowupHistory(runId);
-    } catch (caught) { setError(caught as ApiError); } finally { setLoading(false); }
+    } catch (caught) { if (selectionRevision === hoursSelectionRevision.current) setError(caught as ApiError); }
+    finally { if (selectionRevision === hoursSelectionRevision.current) setLoading(false); }
   }
 
 
   async function loadMoreHistory(start: string, end: string) {
     if (!session.symbol || !session.period) return;
     const period = session.period as Period;
+    const revision = feedRevision.current;
     try {
-      const market = await getMarketBars(session.symbol, period, start, end, undefined, false, "history_prefetch");
-      if (!market.bars.length) return;
+      const earlier = await loadHistoryBars(period, start, end, async (left, right) => {
+        const market = await getMarketBars(session.symbol, period, left, right, undefined, false, "history_prefetch", tradingHours);
+        return market.bars;
+      }, () => revision === feedRevision.current);
+      if (revision !== feedRevision.current || !earlier.length) return;
       setFeed((current) => {
-        if (current.symbol !== session.symbol || current.period !== session.period) return current;
-        const bars = mergeBars(current.bars, market.bars);
+        if (revision !== feedRevision.current || current.symbol !== session.symbol || current.period !== session.period || (current.trading_hours ?? "ETH") !== tradingHours) return current;
+        const bars = mergeBars(current.bars, earlier);
         return {
           ...current,
           bars,
@@ -1333,6 +1378,7 @@ export function ReviewWorkbenchShell() {
       });
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") return;
+      if (revision !== feedRevision.current) return;
       const message = (caught as ApiError)?.message ?? "加载更多历史行情失败";
       setFeed((current) => ({ ...current, pollError: message }));
     }
@@ -1341,11 +1387,12 @@ export function ReviewWorkbenchShell() {
   async function loadMoreFuture(start: string, end: string) {
     if (!session.symbol || !session.period) return;
     const period = session.period as Period;
+    const revision = feedRevision.current;
     try {
-      const market = await getMarketBars(session.symbol, period, start, end, undefined, false, "future_prefetch");
-      if (!market.bars.length) return;
+      const market = await getMarketBars(session.symbol, period, start, end, undefined, false, "future_prefetch", tradingHours);
+      if (revision !== feedRevision.current || !market.bars.length) return;
       setFeed((current) => {
-        if (current.symbol !== session.symbol || current.period !== session.period) return current;
+        if (revision !== feedRevision.current || current.symbol !== session.symbol || current.period !== session.period || (current.trading_hours ?? "ETH") !== tradingHours) return current;
         const bars = mergeBars(current.bars, market.bars);
         return {
           ...current,
@@ -1356,13 +1403,15 @@ export function ReviewWorkbenchShell() {
       });
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") return;
+      if (revision !== feedRevision.current) return;
       const message = (caught as ApiError)?.message ?? "加载后续行情失败";
       setFeed((current) => ({ ...current, pollError: message }));
     }
   }
 
-  async function confirmDebug(query: HistoricalQuery): Promise<boolean> {
+  async function confirmDebug(query: HistoricalQuery, selectionRevision = hoursSelectionRevision.current): Promise<boolean> {
     const preview = await getDebugPreview(query);
+    if (selectionRevision !== hoursSelectionRevision.current) throw new DOMException("Analysis view changed", "AbortError");
     if (!preview.requires_confirmation) return true;
     setDebugPreview(preview);
     return new Promise((resolve) => { debugResolver.current = resolve; });
@@ -1374,16 +1423,19 @@ export function ReviewWorkbenchShell() {
     setDebugPreview(null);
   }
 
-  async function executeAnalysis(query: HistoricalQuery, signal?: AbortSignal): Promise<DemoAnalysisResponse> {
-    if (!await confirmDebug(query)) {
+  async function executeAnalysis(query: HistoricalQuery, signal?: AbortSignal, selectionRevision = hoursSelectionRevision.current): Promise<DemoAnalysisResponse> {
+    if (selectionRevision !== hoursSelectionRevision.current) throw new DOMException("Analysis view changed", "AbortError");
+    if (!await confirmDebug(query, selectionRevision)) {
       throw { code: "debug_cancelled", message: "已取消本次分析" } satisfies ApiError;
     }
-    syncLeftSidebarAutoCollapse(true);
+    if (selectionRevision !== hoursSelectionRevision.current) throw new DOMException("Analysis view changed", "AbortError");
+    setLeftSidebarCollapsed(true);
     setDecisionView("realtime");
     setHistoryReplayActive(false);
     setStreamEvents([]);
     setLlmLive({ stage1: { reasoning: "", content: "" }, stage2: { reasoning: "", content: "" } });
     return analyzeRangeStream(query, (event) => {
+      if (selectionRevision !== hoursSelectionRevision.current) return;
       if (event.type === "llm_delta" && event.text) {
         const stageKey = event.stage === "stage2" ? "stage2" : "stage1";
         const field = event.kind === "content" ? "content" : "reasoning";
@@ -1602,7 +1654,7 @@ export function ReviewWorkbenchShell() {
           question,
           bars: chartBars,
           symbol: activeData?.resolvedSymbol ?? session.symbol,
-          period: session.period || undefined,
+          period: activeData?.sourcePeriod ?? session.activePeriod ?? (session.period || undefined),
         },
         (event) => {
           if (event.type !== "delta" && event.type !== "done") return;
@@ -1643,17 +1695,19 @@ export function ReviewWorkbenchShell() {
 
   /** 执行 K 线分析；实时一键分析按 标的+周期 匹配唯一任务，结果挂到该任务历史下。 */
   async function runAnalysis(nextMode: Mode = mode, sessionOverride?: SessionState) {
-    const currentSession = sessionOverride ?? sessions[nextMode];
+    const sourceSession = sessionOverride ?? sessions[nextMode];
+    const currentSession = { ...sourceSession, period: sourceSession.activePeriod ?? sourceSession.period };
     if (!currentSession.symbol || !currentSession.period) {
       setError({ code: "analysis_missing_selection", message: "请先选择品种与周期" });
       return;
     }
     const period = currentSession.period as Period;
+    const selectionRevision = ++hoursSelectionRevision.current;
 
     if (nextMode === "live") {
       setHistoryReplayActive(false);
       setMode("live");
-      syncLeftSidebarAutoCollapse(true);
+      setLeftSidebarCollapsed(true);
       setWorkbenchMode("analysis");
       setLoading(true);
       setError(null);
@@ -1661,11 +1715,14 @@ export function ReviewWorkbenchShell() {
       try {
         const ensured = await ensureLiveAnalysisTask({
           symbol: currentSession.symbol,
+          trading_hours: currentSession.tradingHours ?? "ETH",
           period,
           title: `${normalizeAnalysisSymbol(currentSession.symbol)} · ${period}`,
         });
+        if (selectionRevision !== hoursSelectionRevision.current) return;
         await refreshDurableTasks();
         const page = await listAnalysisTasks();
+        if (selectionRevision !== hoursSelectionRevision.current) return;
         const restored = page.items.map(sidebarTaskFromApi) as SidebarTask[];
         const task = restored.find((item) => item.id === ensured.id)
           ?? (sidebarTaskFromApi(ensured) as SidebarTask);
@@ -1676,8 +1733,9 @@ export function ReviewWorkbenchShell() {
         setActiveSidebarLeaf(`task:${task.id}`);
         setSidebarOpen((current) => ({ ...current, analysis: true }));
         setExpandedAnalysisTasks((current) => ({ ...current, [task.id]: true }));
-        await runSavedTask(task);
+        await runSavedTask(task, selectionRevision);
       } catch (caught) {
+        if (selectionRevision !== hoursSelectionRevision.current) return;
         setError(caught as ApiError);
         setLoading(false);
       }
@@ -1696,7 +1754,7 @@ export function ReviewWorkbenchShell() {
     }
 
     setMode(nextMode);
-    syncLeftSidebarAutoCollapse(true);
+    setLeftSidebarCollapsed(true);
     setLoading(true);
     setError(null);
     setCsvError(null);
@@ -1705,21 +1763,24 @@ export function ReviewWorkbenchShell() {
     try {
       const response = await executeAnalysis({
         symbol: currentSession.symbol,
+        trading_hours: currentSession.tradingHours ?? "ETH",
         period,
         start,
         end,
         analysis_mode: analysisMode,
-      }, controller.signal);
+      }, controller.signal, selectionRevision);
+      if (selectionRevision !== hoursSelectionRevision.current) return;
       const responseAsOf = lastClosedTs(response.bars) ?? asOf;
       setSnapshotAsOf(responseAsOf);
-      setFeed({
+      setFeed(current => current.bars.length && current.symbol === currentSession.symbol && current.period !== currentSession.period ? current : ({
         kind: "history",
         symbol: currentSession.symbol,
         period: currentSession.period,
+        trading_hours: currentSession.tradingHours ?? "ETH",
         bars: response.bars,
         lastClosedTs: responseAsOf,
         pollError: null,
-      });
+      }));
       setResults((current) => ({
         ...current,
         [nextMode]: toWorkbenchData(response, nextMode, false, unavailable),
@@ -1729,16 +1790,17 @@ export function ReviewWorkbenchShell() {
         setFollowupByAnalysis((current) => ({ ...current, [responseRunId]: [] }));
       }
     } catch (caught) {
+      if (selectionRevision !== hoursSelectionRevision.current) return;
       setResults((current) => ({ ...current, [nextMode]: null }));
       setError(caught instanceof DOMException && caught.name === "AbortError" ? { code: "analysis_cancelled", message: "分析已取消" } : caught as ApiError);
     } finally {
-      analysisAbortRef.current = null;
-      setLoading(false);
+      if (analysisAbortRef.current === controller) analysisAbortRef.current = null;
+      if (selectionRevision === hoursSelectionRevision.current) setLoading(false);
     }
   }
 
   async function toggleLiveRule() {
-    const currentSession = sessions.live;
+    const currentSession = { ...sessions.live, period: sessions.live.activePeriod ?? sessions.live.period };
     if (!currentSession.symbol || !currentSession.period) {
       setError({ code: "analysis_missing_selection", message: "请先选择品种与周期" });
       return;
@@ -1753,7 +1815,9 @@ export function ReviewWorkbenchShell() {
 
   /** 执行交易复盘；保存任务时直接使用新任务的会话和交易选择。 */
   async function runReview(sessionOverride?: SessionState, selectedTradeIdsOverride?: string[]) {
-    const currentSession = sessionOverride ?? session;
+    const selectionRevision = ++hoursSelectionRevision.current;
+    const sourceSession = sessionOverride ?? session;
+    const currentSession = { ...sourceSession, period: sourceSession.activePeriod ?? sourceSession.period };
     const currentSelectedTradeIds = selectedTradeIdsOverride ?? selectedTradeIds;
     setLoading(true);
     setError(null);
@@ -1773,7 +1837,7 @@ export function ReviewWorkbenchShell() {
           historical: { ...current.historical, start: reviewStartLocal, end: reviewEndLocal, symbol: reviewTrades[0]?.symbol_root ?? current.historical.symbol },
         }));
       }
-      syncLeftSidebarAutoCollapse(true);
+      setLeftSidebarCollapsed(true);
       const tradeMarkers: TradeMarker[] = reviewTrades.flatMap((trade) => [
         { timestamp: trade.entered_at, position: trade.direction === "long" ? "belowBar" : "aboveBar", shape: trade.direction === "long" ? "arrowUp" : "arrowDown", color: trade.direction === "long" ? "#22c55e" : "#ef4444", text: `${trade.direction === "long" ? "多" : "空"} ${trade.contract_name}` },
         { timestamp: trade.exited_at, position: "inBar", shape: "circle", color: "#64748b", text: "平仓" },
@@ -1781,6 +1845,7 @@ export function ReviewWorkbenchShell() {
       const reviewPeriods: Period[] = currentSession.period ? [currentSession.period] : ["5m", "1h", "4h", "1d"];
       const reviewQueries = reviewTrades.flatMap((trade) => reviewPeriods.map((period): HistoricalQuery => ({
         symbol: trade.symbol_root,
+        trading_hours: currentSession.tradingHours ?? "ETH",
         period,
         start: trade.entered_at,
         end: trade.exited_at,
@@ -1798,7 +1863,8 @@ export function ReviewWorkbenchShell() {
         }],
       })));
       const responses: DemoAnalysisResponse[] = [];
-      for (const query of reviewQueries) responses.push(await executeAnalysis(query, controller.signal));
+      for (const query of reviewQueries) responses.push(await executeAnalysis(query, controller.signal, selectionRevision));
+      if (selectionRevision !== hoursSelectionRevision.current) return;
       const primaryData = toWorkbenchData(responses[0], "historical", false, unavailable);
       primaryData.tradeMarkers = tradeMarkers;
       primaryData.reviewResult = [...new Map(
@@ -1809,14 +1875,15 @@ export function ReviewWorkbenchShell() {
       ));
       primaryData.detailLabel = `${reviewTrades.length} 笔逐笔复盘 · ${reviewPeriods.join(" / ")}`;
       const reviewAsOf = lastClosedTs(primaryData.bars);
-      setFeed({
+      setFeed(current => current.bars.length && current.symbol === (reviewTrades[0]?.symbol_root || currentSession.symbol) && current.period !== currentSession.period ? current : ({
         kind: "history",
         symbol: reviewTrades[0]?.symbol_root || currentSession.symbol,
         period: currentSession.period,
+        trading_hours: currentSession.tradingHours ?? "ETH",
         bars: primaryData.bars,
         lastClosedTs: reviewAsOf,
         pollError: null,
-      });
+      }));
       setSnapshotAsOf(reviewAsOf);
       setResults((current) => ({ ...current, historical: primaryData }));
       const reviewRunId = responses[0]?.run_id ?? "";
@@ -1824,11 +1891,12 @@ export function ReviewWorkbenchShell() {
         setFollowupByAnalysis((current) => ({ ...current, [reviewRunId]: [] }));
       }
     } catch (caught) {
+      if (selectionRevision !== hoursSelectionRevision.current) return;
       setResults((current) => ({ ...current, historical: null }));
       setError(caught instanceof DOMException && caught.name === "AbortError" ? { code: "analysis_cancelled", message: "复盘已取消" } : caught as ApiError);
     } finally {
-      analysisAbortRef.current = null;
-      setLoading(false);
+      if (analysisAbortRef.current === controller) analysisAbortRef.current = null;
+      if (selectionRevision === hoursSelectionRevision.current) setLoading(false);
     }
   }
 
@@ -1933,7 +2001,7 @@ export function ReviewWorkbenchShell() {
       if((!replayTrading.id&&!replayTrading.busy)||replayTrading.exitOpen)return;
       const target=event.target as HTMLElement;
       const button=target.closest<HTMLButtonElement>('button,a');
-      if(button&&!target.closest('[data-replay-interactive]')&&!button.matches('[aria-haspopup], [role=tab], .sidebar-toggle, .sidebar-chevron-btn')&&!(button.matches('.sidebar-l1')&&!button.closest('[data-records-entry]'))){
+      if(button&&!target.closest('[data-replay-interactive]')&&!button.matches('[aria-haspopup], [role=tab], .task-nav-trigger, .analysis-panel-trigger, .analysis-panel-close, .sidebar-toggle, .sidebar-chevron-btn')&&!(button.matches('.sidebar-l1')&&!button.closest('[data-records-entry]'))){
         event.preventDefault();event.stopPropagation();
         replayTrading.requestLeave(()=>window.setTimeout(()=>button.click(),0));
       }
@@ -1967,23 +2035,32 @@ export function ReviewWorkbenchShell() {
       <div className="risk-banner"><span aria-hidden="true">i</span><p>AI 结果仅用于研究与复盘，不构成投资建议。行情超过预期更新时间时请勿据此决策。</p>{loading && analysisAbortRef.current && <button onClick={() => analysisAbortRef.current?.abort()} type="button">取消当前任务</button>}</div>
 
       <section
-        className={`${effectiveLeftCollapsed ? "shell-grid collapsed" : "shell-grid"}${replayView ? " replay-mode" : ""}${replayTrading.id ? " chart-trading-mode" : ""}`}
-        data-left-sidebar-mode={leftSidebarManualOverride !== null ? "manual" : leftSidebarAutoCollapsed ? "auto" : "default"}
+        className={`shell-grid analysis-drawer-workspace${replayView ? " replay-mode" : ""}${replayTrading.id ? " chart-trading-mode" : ""}`}
         style={{
-          "--center-panel-fr": `${100 - rightPanelPercent}fr`,
-          "--right-panel-fr": `${rightPanelPercent}fr`,
+          "--analysis-drawer-width": `${rightPanelPercent}vw`,
         } as CSSProperties}
       >
+        <button
+          ref={leftSidebarTriggerRef}
+          className="task-nav-trigger"
+          aria-label={leftSidebarCollapsed ? "展开任务导航" : "收起任务导航"}
+          aria-expanded={!leftSidebarCollapsed}
+          aria-controls="floating-task-navigation"
+          onClick={() => setLeftSidebarCollapsed(value => !value)}
+          type="button"
+        ><span aria-hidden="true">☰</span> 任务导航</button>
         <aside
-          className="shell-panel left-panel glass"
-          onMouseEnter={handleLeftSidebarMouseEnter}
-          onMouseLeave={handleLeftSidebarMouseLeave}
+          id="floating-task-navigation"
+          ref={leftSidebarRef}
+          className="shell-panel left-panel floating-task-panel"
+          aria-label="任务导航"
+          hidden={leftSidebarCollapsed}
         >
           <SidebarNav
             onOpenRecords={()=>setReplayView({mode:'records'})}
-            collapsed={effectiveLeftCollapsed}
-            onToggleCollapsed={handleLeftSidebarToggle}
-            onExpand={() => setLeftSidebarManualCollapsed(false)}
+            collapsed={false}
+            onToggleCollapsed={() => { setLeftSidebarCollapsed(true); leftSidebarTriggerRef.current?.focus(); }}
+            onExpand={() => setLeftSidebarCollapsed(false)}
             openSections={sidebarOpen}
             onToggleSection={(section) => setSidebarOpen((current) => ({ ...current, [section]: !current[section] }))}
             activeLeaf={activeSidebarLeaf}
@@ -2068,11 +2145,12 @@ export function ReviewWorkbenchShell() {
                 <select
                   aria-label="K 线周期切换"
                   className="panel-chip-native-select"
-                  value={replayTrading.id?replayTrading.replay.period:session.period}
+                  value={replayTrading.id?replayTrading.replay.period:session.activePeriod??session.period}
                   onChange={(event) => {
                     const nextPeriod = event.target.value as Period;
                     if(replayTrading.id){void replayTrading.replay.changePeriod(nextPeriod);return;}
-                    if(nextPeriod === session.period)return;
+                    if(nextPeriod === (session.activePeriod??session.period))return;
+                    if(session.period){updateSession("activePeriod",nextPeriod);return;}
                     updateSession("period", nextPeriod);
                     resetCurrentChartState();
                   }}
@@ -2081,6 +2159,21 @@ export function ReviewWorkbenchShell() {
                   {periods.map((period) => (
                     <option key={period} value={period}>{period}</option>
                   ))}
+                </select>
+              </div>
+              <div className="panel-chip-action panel-chip-select-button-group">
+                <select aria-label="K 线交易时段" title="交易时段（纽约时间，自动适配夏令时）" className="panel-chip-native-select"
+                  value={replayTrading.id ? replayTrading.replay.session?.state.config.trading_hours ?? "ETH" : tradingHours}
+                  disabled={loading || (replayTrading.id ? !replayTrading.replay.canTrade : replayTrading.busy)}
+                  onChange={event => {
+                    const next = event.target.value as TradingHours;
+                    if (replayTrading.id) { void replayTrading.replay.changeTradingHours(next); return; }
+                    if (next === tradingHours) return;
+                    hoursSelectionRevision.current++;
+                    updateSession("tradingHours", next);
+                    resetCurrentChartState();
+                  }}>
+                  <option value="ETH">ETH 全时段</option><option value="RTH">RTH 常规时段</option>
                 </select>
               </div>
               <span className="panel-chip-action panel-chip-action--timezone" title="K 线数据时区">{chartTimezone.label}</span>
@@ -2132,30 +2225,24 @@ export function ReviewWorkbenchShell() {
                     controller={replayTrading}
                     userScope={user?.id??user?.username??'local'}
                     symbol={session.symbol}
-                    bars={feed.period===feedPeriod?feed.bars:activeData?.sourcePeriod===feedPeriod?activeData.bars:[]}
+                    tradingHours={tradingHours}
+                    bars={feed.period===feedPeriod&&(feed.trading_hours??"ETH")===tradingHours?feed.bars:activeData?.sourcePeriod===feedPeriod?activeData.bars:[]}
                     chartKey={chartKey}
                     locked={chartLocked}
                     markers={activeData?.tradeMarkers}
                     onNeedHistory={loadMoreHistory}
                     onNeedFuture={loadMoreFuture}
                     onReplayLoad={async (start, end, signal) => {
-                      if (!session.symbol || !session.period) return [];
-                      const market = await getMarketBars(session.symbol, session.period as Period, start, end, signal, false, "history_prefetch");
+                      const period = session.activePeriod ?? session.period;
+                      if (!session.symbol || !period) return [];
+                      const market = await getMarketBars(session.symbol, period, start, end, signal, false, "history_prefetch", tradingHours);
                       return market.bars;
                     }}
-                    onPeriodChange={(nextPeriod) => {
-                      updateSession("period", nextPeriod);
-                      setFeed((current) => ({
-                        ...current,
-                        period: nextPeriod,
-                        bars: [],
-                        lastClosedTs: null,
-                        pollError: null,
-                      }));
-                    }}
+                    onPeriodChange={(nextPeriod) => updateSession("activePeriod", nextPeriod)}
+                    sourcePeriod={feedPeriod}
                     analysisBars={activeData?.bars}
                     analysisPeriod={activeData?.sourcePeriod as Period | undefined}
-                    period={feedPeriod}
+                    period={session.activePeriod??feedPeriod}
                     timezoneOffsetMinutes={chartTimezone.offsetMinutes}
                     stage1={activeData?.stage1}
                     stage2={activeData?.stage2}
@@ -2167,24 +2254,33 @@ export function ReviewWorkbenchShell() {
           </div>
         </section>
 
-        <div
-          aria-label="调整分析栏宽度"
-          aria-orientation="vertical"
-          aria-valuemax={70}
-          aria-valuemin={30}
-          aria-valuenow={Math.round(rightPanelPercent)}
-          className="panel-resizer"
-          onDoubleClick={() => setRightPanelPercent(44)}
-          onKeyDown={onSplitKeyDown}
-          onPointerCancel={() => { splitDraggingRef.current = false; }}
-          onPointerDown={onSplitPointerDown}
-          onPointerMove={onSplitPointerMove}
-          onPointerUp={() => { splitDraggingRef.current = false; }}
-          role="separator"
-          tabIndex={0}
-        />
+        <button
+          ref={rightPanelTriggerRef}
+          className="analysis-panel-trigger"
+          aria-label={`${rightPanelOpen ? "收起" : "展开"}${workbenchMode === "review" ? "复盘面板" : mode === "live" ? "实时面板" : "区间面板"}`}
+          aria-expanded={rightPanelOpen}
+          aria-controls="floating-analysis-panel"
+          onClick={() => setRightPanelOpen(value => !value)}
+          type="button"
+        ><span aria-hidden="true">☷</span> {workbenchMode === "review" ? "复盘面板" : mode === "live" ? "实时面板" : "区间面板"}</button>
+        <aside id="floating-analysis-panel" aria-label={rightPanelTitle} className="shell-panel right-panel glass floating-analysis-panel" ref={rightPanelRef} hidden={!rightPanelOpen}>
+          <div
+            aria-label="调整分析栏宽度"
+            aria-orientation="vertical"
+            aria-valuemax={70}
+            aria-valuemin={30}
+            aria-valuenow={Math.round(rightPanelPercent)}
+            className="panel-resizer"
+            onDoubleClick={() => setRightPanelPercent(44)}
+            onKeyDown={onSplitKeyDown}
+            onPointerCancel={() => { splitDraggingRef.current = false; }}
+            onPointerDown={onSplitPointerDown}
+            onPointerMove={onSplitPointerMove}
+            onPointerUp={() => { splitDraggingRef.current = false; }}
+            role="separator"
+            tabIndex={0}
+          />
 
-        <aside className="shell-panel right-panel glass" ref={rightPanelRef}>
           <header className="panel-header">
             <div>
               <strong>{rightPanelTitle}</strong>
@@ -2192,6 +2288,7 @@ export function ReviewWorkbenchShell() {
             </div>
             <div className="panel-chips">
               <span>{activeData ? "已加载" : loading ? "运行中" : "空闲"}</span>
+              <button type="button" className="analysis-panel-close" aria-label="收起分析面板" onClick={() => { setRightPanelOpen(false); rightPanelTriggerRef.current?.focus(); }}>›</button>
             </div>
           </header>
 
@@ -2458,6 +2555,7 @@ export function ReviewWorkbenchShell() {
                 <input value={taskComposer.title} onChange={(event) => updateTaskComposer("title", event.target.value)} />
               </label>
 
+              <label>交易时段<select aria-label="任务交易时段" value={taskComposer.tradingHours ?? "ETH"} onChange={event => updateTaskComposer("tradingHours", event.target.value)}><option value="ETH">ETH 全时段</option><option value="RTH">RTH 常规时段</option></select></label>
               {taskComposer.type === "review" ? (
                 <>
                   <div className="control-group">

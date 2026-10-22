@@ -80,7 +80,7 @@ export function IndicatorLegend({ chart, renderer, container, bars, settings, pe
         if (index === 0 && stage) {
           // Replay quotes can wrap or move around position labels. Reserve their
           // actual bounds so the legend never covers the trading controls.
-          for (const element of stage.querySelectorAll('.chart-trading-heading, .chart-quick-trade')) {
+          for (const element of stage.querySelectorAll('.chart-quick-trade')) {
             const bounds = element.getBoundingClientRect();
             if (bounds.height) top = Math.max(top, bounds.bottom - origin.top + 6);
           }

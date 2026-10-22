@@ -50,7 +50,7 @@ def run_spec(period: str, *, trades: list[dict] | None = None) -> RunCreateSpec:
 async def test_create_task_only_persists_pending_configuration(repository) -> None:
     task = await repository.create_task(uuid.uuid4(), task_payload())
     assert task.status == "pending"
-    assert task.config_json == {"symbol": "ES", "period": "5m"}
+    assert task.config_json == {"symbol": "ES", "period": "5m", "trading_hours": "ETH"}
 
 
 @pytest.mark.anyio

@@ -8,9 +8,9 @@ const { chartSpy } = vi.hoisted(() => ({
 }));
 
 vi.mock("./TradingChart", () => ({
-  TradingChart: ({ bars, markers = [], timezoneOffsetMinutes, onStartTradingReplay, showToolbar = true }: { showToolbar?: boolean; onStartTradingReplay?:(start?:string)=>void; bars: Array<unknown>; markers?: Array<unknown>; timezoneOffsetMinutes?: number }) => {
-    if (showToolbar) chartSpy({ bars, markers, timezoneOffsetMinutes });
-    return <><div aria-label={showToolbar ? "K 线图" : "辅助 K 线图"} data-bars={bars.length} data-markers={markers.length} role="img" />{showToolbar && <IndicatorPanel settings={DEFAULT_INDICATOR_SETTINGS} onChange={()=>{}} />}{onStartTradingReplay&&<button onClick={()=>onStartTradingReplay("2025-01-01T00:00:00Z")}>从此处回放</button>}</>;
+  TradingChart: ({ chartKey, bars, markers = [], timezoneOffsetMinutes, onStartTradingReplay, onNeedHistory, showToolbar = true }: { chartKey?: string; onNeedHistory?:(start:string,end:string)=>Promise<void>; showToolbar?: boolean; onStartTradingReplay?:(start?:string)=>void; bars: Array<unknown>; markers?: Array<unknown>; timezoneOffsetMinutes?: number }) => {
+    if (showToolbar) chartSpy({ bars, markers, timezoneOffsetMinutes, onNeedHistory });
+    return <><div aria-label={showToolbar ? "K 线图" : "辅助 K 线图"} data-chart-key={chartKey} data-bars={bars.length} data-markers={markers.length} role="img" />{showToolbar && <IndicatorPanel settings={DEFAULT_INDICATOR_SETTINGS} onChange={()=>{}} />}{onStartTradingReplay&&<button onClick={()=>onStartTradingReplay("2025-01-01T00:00:00Z")}>从此处回放</button>}</>;
   },
 }));
 
@@ -41,6 +41,161 @@ describe("App", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     chartSpy.mockClear();
+  });
+
+  it("keeps task navigation collapsed until clicked and dismisses it outside or with Escape", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/v1/health") return Response.json({ status: "ok", auth_required: false });
+      return liveBackgroundResponse(url) ?? Response.json([]);
+    }));
+    render(<App />);
+    const trigger = screen.getByRole("button", { name: "展开任务导航" });
+    expect(screen.queryByRole("button", { name: "K线分析" })).not.toBeInTheDocument();
+    fireEvent.mouseEnter(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(trigger);
+    expect(screen.getByRole("button", { name: "K线分析" })).toBeVisible();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "历史复盘" }));
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+    fireEvent.click(trigger);
+    fireEvent.pointerDown(document.body);
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("button", { name: "收起侧边栏" }));
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await act(async () => {});
+  });
+
+  it("opens the analysis drawer and preserves its selected view across dismissal", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/v1/health") return Response.json({ status: "ok", auth_required: false });
+      return liveBackgroundResponse(url) ?? Response.json([]);
+    }));
+    render(<App />);
+    const trigger = screen.getByRole("button", { name: "展开实时面板" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("tablist", { name: "决策视图" })).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+    fireEvent.pointerDown(screen.getByRole("tab", { name: "逐根分析" }));
+    fireEvent.click(screen.getByRole("tab", { name: "逐根分析" }));
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(trigger);
+    expect(screen.getByRole("tab", { name: "逐根分析" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.pointerDown(document.body);
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("button", { name: "收起分析面板" }));
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await act(async () => {});
+  });
+
+  it("selects another loaded pane without clearing candles or requesting market data again", async () => {
+    const bars = [{ timestamp: "2026-10-02T20:50:00Z", open: 100, high: 102, low: 99, close: 101, volume: 10 }];
+    const requests: string[] = [];
+    const analysisConfigs: Array<{period: string}> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/v1/health") return Response.json({ status: "ok", auth_required: false });
+      if (url.startsWith("/api/v1/market/bars?")) { requests.push(url); return Response.json({ bars }); }
+      if (url === "/api/v1/analysis-tasks/ensure-live" && init?.method === "POST") {
+        analysisConfigs.push(JSON.parse(String(init.body)));
+        return Response.json({ code: "test_stop", message: "test stops at task creation" }, { status: 500 });
+      }
+      return liveBackgroundResponse(url) ?? Response.json([]);
+    }));
+    render(<App />);
+    await pickSymbolAndPeriod("ES", "5m");
+    await waitFor(() => expect(screen.getAllByRole("img", { name: /K 线图/ })).toHaveLength(4));
+    await waitFor(() => expect(screen.getAllByRole("img", { name: /K 线图/ }).every(chart => chart.getAttribute("data-bars") === "1")).toBe(true));
+    const count = requests.length;
+    const chartKeys = screen.getAllByRole("img", { name: /K 线图/ }).map(chart => chart.getAttribute("data-chart-key"));
+    for (const index of [3, 4, 1, 2]) {
+      fireEvent.pointerDown(screen.getByRole("region", { name: `ES · ${['1m','5m','15m','1h'][index-1]} 图表` }));
+      await act(async () => {});
+      expect(screen.getByRole("button", { name: `选中图表 ${index}` })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByLabelText("K 线周期切换")).toHaveValue(['1m','5m','15m','1h'][index-1]);
+      expect(requests).toHaveLength(count);
+      expect(screen.getAllByRole("img", { name: /K 线图/ }).map(chart => chart.getAttribute("data-chart-key"))).toEqual(chartKeys);
+      expect(screen.getAllByRole("img", { name: /K 线图/ }).every(chart => chart.getAttribute("data-bars") === "1")).toBe(true);
+    }
+    fireEvent.pointerDown(screen.getByRole("region", { name: "ES · 15m 图表" }));
+    fireEvent.click(screen.getByRole("button", { name: "一键分析" }));
+    await waitFor(() => expect(analysisConfigs).toEqual([expect.objectContaining({ period: "15m" })]));
+    expect(requests).toHaveLength(count);
+    fireEvent.change(screen.getByLabelText("K 线周期切换"), { target: { value: "5m" } });
+    await act(async () => {});
+    expect(requests.filter(url=>url.includes("include_partial=true"))).toHaveLength(1);
+    expect(screen.getAllByRole("img", { name: /K 线图/ }).every(chart => chart.getAttribute("data-bars") === "1")).toBe(true);
+    fireEvent.pointerDown(screen.getByRole("button", { name: "选中图表 3" }));
+    fireEvent.change(screen.getByLabelText("K 线周期切换"), { target: { value: "30m" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "选中图表 3" })).toHaveTextContent("30m"));
+    await waitFor(() => expect(requests.length).toBeGreaterThan(count));
+  });
+
+  it("changes only the selected chart timeframe even when its sibling has that timeframe",async()=>{
+    const bars=[{timestamp:"2026-10-02T20:00:00Z",open:100,high:102,low:99,close:101,volume:10}];
+    vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL)=>{
+      const url=String(input);
+      if(url==="/api/v1/health")return Response.json({status:"ok",auth_required:false});
+      if(url.startsWith("/api/v1/market/bars?"))return Response.json({bars});
+      return liveBackgroundResponse(url)??Response.json([]);
+    }));
+    render(<App/>);
+    await waitFor(()=>expect(screen.getByLabelText("图表 2 周期")).toBeEnabled());
+    fireEvent.click(screen.getByRole("button",{name:"双图"}));
+    fireEvent.pointerDown(screen.getByRole("button",{name:"选中图表 1"}));
+    fireEvent.change(screen.getByLabelText("K 线周期切换"),{target:{value:"5m"}});
+    expect(screen.getByLabelText("图表 1 周期")).toHaveValue("5m");
+    expect(screen.getByLabelText("图表 2 周期")).toHaveValue("5m");
+    expect(screen.getByRole("button",{name:"选中图表 1"})).toHaveAttribute("aria-pressed","true");
+    await waitFor(()=>expect(screen.getByLabelText("图表 2 周期")).toBeEnabled());
+    fireEvent.pointerDown(screen.getByLabelText("图表 2 周期"));
+    fireEvent.change(screen.getByLabelText("图表 2 周期"),{target:{value:"30m"}});
+    await waitFor(()=>expect(screen.getByLabelText("图表 2 周期")).toBeEnabled());
+    expect(screen.getByLabelText("图表 1 周期")).toHaveValue("5m");
+    expect(screen.getByLabelText("图表 2 周期")).toHaveValue("30m");
+    fireEvent.change(screen.getByLabelText("图表 1 周期"),{target:{value:"15m"}});
+    await waitFor(()=>expect(screen.getByLabelText("图表 1 周期")).toBeEnabled());
+    expect(screen.getByLabelText("图表 1 周期")).toHaveValue("15m");
+    expect(screen.getByLabelText("图表 2 周期")).toHaveValue("30m");
+    expect(screen.getByLabelText("K 线周期切换")).toHaveValue("15m");
+  });
+
+  it("prepends Friday ETH bars when history at Sunday open would otherwise hit an empty weekend and 403", async () => {
+    const sunday = { timestamp: "2026-10-04T22:00:00Z", open: 7700, high: 7702, low: 7699, close: 7701, volume: 10 };
+    const friday = { ...sunday, timestamp: "2026-10-02T20:45:00Z" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/v1/health") return Response.json({ status: "ok", auth_required: false });
+      if (url.startsWith("/api/v1/market/bars?")) {
+        const params = new URL(url, "http://localhost").searchParams;
+        if (params.get("period") === "15m" && !params.has("include_partial") && Date.parse(params.get("end")!) <= Date.parse(sunday.timestamp)) {
+          if (Date.parse(params.get("start")!) > Date.parse(friday.timestamp)) {
+            return Response.json({ message: "upstream forbidden", code: "provider_error" }, { status: 502 });
+          }
+          expect(params.get("trading_hours")).toBe("ETH");
+          return Response.json({ bars: [friday] });
+        }
+        return Response.json({ bars: [sunday] });
+      }
+      return liveBackgroundResponse(url) ?? Response.json([]);
+    }));
+    render(<App />);
+    await pickSymbolAndPeriod("ES", "15m");
+    await waitFor(() => expect(chartSpy.mock.lastCall?.[0].bars).toEqual([sunday]));
+    await act(async () => {
+      await chartSpy.mock.lastCall![0].onNeedHistory("2026-10-03T16:00:00Z", sunday.timestamp);
+    });
+    await waitFor(() => expect(chartSpy.mock.lastCall?.[0].bars).toEqual([friday, sunday]));
   });
 
   it("shows the latest stored candles when the live window is empty and labels their age", async () => {
@@ -171,6 +326,7 @@ describe("App", () => {
       return liveBackgroundResponse(url) ?? Response.json([]);
     }));
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
     fireEvent.click(await screen.findByRole('button',{name:'交易记录'}));
     const records=await screen.findByRole('region',{name:'交易记录'});
     expect(records.closest('.shell-grid')).not.toBeNull();
@@ -198,6 +354,7 @@ describe("App", () => {
       return liveBackgroundResponse(url)??Response.json([]);
     }));
     render(<App/>);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
     fireEvent.click(await screen.findByRole('button',{name:'交易记录'}));
     fireEvent.click(screen.getByRole('tab',{name:'真实交易'}));
     expect(await screen.findByRole('alert')).toHaveTextContent('真实交易暂时不可用');
@@ -222,6 +379,7 @@ describe("App", () => {
       return liveBackgroundResponse(url)??Response.json([]);
     }));
     render(<App/>);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
     fireEvent.click(await screen.findByRole('button',{name:'交易记录'}));
     fireEvent.click(screen.getByRole('tab',{name:'真实交易'}));
     await screen.findByText('ESZ6');
@@ -251,6 +409,7 @@ describe("App", () => {
       return liveBackgroundResponse(url) ?? Response.json([]);
     }));
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
     fireEvent.click(await screen.findByRole("button", { name: "终态测试 · ES · 5m" }));
     fireEvent.click(await screen.findByRole("button", { name: "分析最新行情" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(message);
@@ -284,6 +443,7 @@ describe("App", () => {
       throw new Error(`未预期的请求：${url}`);
     }));
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
 
     const button = await screen.findByRole("button", { name: "+ 新建分析任务" });
     await waitFor(() => expect(button).toBeEnabled());
@@ -294,9 +454,10 @@ describe("App", () => {
     expect(options.map((option) => (option as HTMLOptionElement).value)).toEqual(["ES", "NQ", "MES", "MNQ", "MGC"]);
   });
 
-  it("uses a resizable chart-first analysis split without fullscreen controls", async () => {
+  it("keeps width adjustment inside the analysis drawer", async () => {
     render(<App />);
 
+    fireEvent.click(screen.getByRole("button", { name: /展开.*面板/ }));
     const separator = await screen.findByRole("separator", { name: "调整分析栏宽度" });
     expect(separator).toHaveAttribute("aria-valuenow", "44");
     expect(screen.queryByRole("button", { name: "展开右栏" })).not.toBeInTheDocument();
@@ -313,6 +474,7 @@ describe("App", () => {
     fireEvent.doubleClick(separator);
     expect(separator).toHaveAttribute("aria-valuenow", "44");
 
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(1000);
     const center = document.querySelector(".center-panel") as HTMLElement;
     const right = document.querySelector(".right-panel") as HTMLElement;
     vi.spyOn(center, "getBoundingClientRect").mockReturnValue({ left: 100, right: 600 } as DOMRect);
@@ -328,6 +490,12 @@ describe("App", () => {
     fireEvent(separator, pointerEvent("pointermove", 800));
     expect(separator).toHaveAttribute("aria-valuenow", "30");
     fireEvent(separator, pointerEvent("pointerup", 800));
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(2560);
+    vi.spyOn(center, "getBoundingClientRect").mockReturnValue({ left: 440, right: 2120 } as DOMRect);
+    vi.spyOn(right, "getBoundingClientRect").mockReturnValue({ left: 1417.6, right: 2544 } as DOMRect);
+    fireEvent(separator, pointerEvent("pointerdown", 1417.6));
+    expect(separator).toHaveAttribute("aria-valuenow", "44");
+    fireEvent(separator, pointerEvent("pointerup", 1417.6));
   });
 
   it("uses keyboard-operable tabs for decision views", async () => {
@@ -346,6 +514,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
     await pickSymbolAndPeriod();
+    fireEvent.click(screen.getByRole("button", { name: /展开.*面板/ }));
     const tablist = await screen.findByRole("tablist", { name: "决策视图" });
     const tabs = within(tablist).getAllByRole("tab");
     expect(tabs).toHaveLength(3);
@@ -377,6 +546,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
     await pickSymbolAndPeriod();
 
     await waitFor(() => expect(screen.getByLabelText("K 线图")).toHaveAttribute("data-bars", "2"));
@@ -549,6 +719,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
     const expandButton = await screen.findByRole("button", { name: "展开ES 运行记录 · ES · 5m的分析" });
     fireEvent.click(expandButton);
     fireEvent.click(await screen.findByRole("button", { name: "5m · 进行中" }));
@@ -574,6 +745,7 @@ describe("App", () => {
     }));
 
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
     const newTaskButton = await screen.findByRole("button", { name: "+ 新建复盘任务" });
     await waitFor(() => expect(newTaskButton).toBeEnabled());
     fireEvent.click(newTaskButton);
@@ -611,6 +783,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
     const newTaskButton = await screen.findByRole("button", { name: "+ 新建复盘任务" });
     await waitFor(() => expect(newTaskButton).toBeEnabled());
     fireEvent.click(newTaskButton);
@@ -648,6 +821,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
     const newTaskButton = await screen.findByRole("button", { name: "+ 新建分析任务" });
     await waitFor(() => expect(newTaskButton).toBeEnabled());
     fireEvent.click(newTaskButton);
@@ -694,6 +868,7 @@ describe("App", () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: "ok", api_version: "v1", provider_configured: true, provider_transport: "https", storage_status: "postgresql_configured", auth_required: false }) }));
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
     expect(screen.getByRole("button", { name: "K线分析" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "更多" }));
     expect(screen.getByRole("menuitem", { name: "交易记录" })).toBeVisible();
@@ -804,6 +979,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "展开任务导航" }));
     const newTaskButton = await screen.findByRole("button", { name: "+ 新建复盘任务" });
     await waitFor(() => expect(newTaskButton).toBeEnabled());
     fireEvent.click(newTaskButton);
@@ -962,6 +1138,8 @@ it('original chart replay guards symbol changes and allows restoring the origina
  expect(screen.getByRole('dialog',{name:'保存本次回放？'})).toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:'继续回放'}));
  expect(screen.getByLabelText('K 线标的切换')).toHaveValue('ES');
+ fireEvent.click(screen.getByRole('button',{name:'展开任务导航'}));
+ expect(screen.queryByRole('dialog',{name:'保存本次回放？'})).not.toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:'交易记录'}));
  expect(screen.getByRole('dialog',{name:'保存本次回放？'})).toBeInTheDocument();
  expect(screen.queryByRole('region',{name:'交易记录'})).not.toBeInTheDocument();

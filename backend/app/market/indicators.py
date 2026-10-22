@@ -266,7 +266,8 @@ def build_market_indicators(
     # 取可见 K 线最近 100 根，按从新到旧排列
     newest = list(reversed(visible_bars[-100:]))
     refs = assign_timestamp_refs(
-        [bar.timestamp for bar in newest], symbol=symbol, timeframe=timeframe
+        [bar.timestamp for bar in newest], symbol=symbol, timeframe=timeframe,
+        trading_hours=newest[0].trading_hours if newest else "ETH",
     )
     per_bar = []
     for seq, (bar, ref) in enumerate(zip(newest, refs), start=1):
@@ -300,6 +301,7 @@ def build_market_indicators(
             "bar_timestamp": ref.bar_timestamp.isoformat(),
             "timeframe": ref.timeframe,
             "session": ref.session,
+            "trading_hours": ref.trading_hours,
             "day_index": ref.day_index,
             "open": bar.open,
             "high": bar.high,

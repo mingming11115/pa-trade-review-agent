@@ -22,7 +22,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.config import KLINE_SYMBOLS, Settings, get_settings
 from app.core.database import Base, SessionFactory, ensure_schema, engine
-from app.core.models import Bar, HistoricalQuery, Period
+from app.core.models import Bar, HistoricalQuery, Period, TradingHours
+from app.market.trading_hours import aggregate_session_bars, bucket_start, bucket_end, in_trading_hours, rth_window
 from app.analysis.workflow.stage1.core.bar_identity import enrich_api_bars
 from app.market.provider import MassiveHistoricalProvider
 from app.core.errors import ProviderError
@@ -125,6 +126,7 @@ class Coverage(BaseModel):
 class MarketRange(BaseModel):
     symbol: str
     period: str
+    trading_hours: TradingHours = "ETH"
     bars: list[Bar]
     coverage: Coverage
 
@@ -208,15 +210,16 @@ def aggregate_bars(
     return result
 
 
-def calculate_coverage(bars: Sequence[Bar], start: datetime, end: datetime, source_period: str) -> Coverage:
+def calculate_coverage(bars: Sequence[Bar], start: datetime, end: datetime, source_period: str, *, symbol: str = "", trading_hours: TradingHours = "ETH") -> Coverage:
     """计算指定时间范围内的 K 线覆盖情况：预期数量、实际数量、缺失桶列表。"""
     minutes = PERIOD_MINUTES[source_period]
     cursor = floor_bucket(start, minutes)
     boundary = floor_bucket(end, minutes)
-    actual = {floor_bucket(bar.timestamp, minutes) for bar in bars}
+    actual = {floor_bucket(bar.timestamp, minutes) for bar in bars if in_trading_hours(bar.timestamp, symbol, trading_hours)}
     expected: list[datetime] = []
     while cursor < boundary:
-        expected.append(cursor)
+        if in_trading_hours(cursor, symbol, trading_hours):
+            expected.append(cursor)
         cursor += timedelta(minutes=minutes)
     missing = [bucket for bucket in expected if bucket not in actual]
     return Coverage(source_period=source_period, expected_bars=len(expected), actual_bars=len(actual & set(expected)), complete=not missing, missing_buckets=missing[:500])
@@ -228,6 +231,7 @@ def find_missing_session_buckets(
     symbol: str,
     *,
     limit: int = 500,
+    trading_hours: TradingHours = "ETH",
 ) -> list[datetime]:
     """Return open times missing between consecutive bars within the same session day.
 
@@ -244,11 +248,13 @@ def find_missing_session_buckets(
     missing: list[datetime] = []
     ordered = sorted(bars, key=lambda item: item.timestamp)
     for previous, current in zip(ordered, ordered[1:]):
-        prev_ts = floor_bucket(previous.timestamp, minutes)
-        curr_ts = floor_bucket(current.timestamp, minutes)
+        prev_ts = bucket_start(previous.timestamp, period, symbol, trading_hours)
+        curr_ts = bucket_start(current.timestamp, period, symbol, trading_hours)
         if curr_ts <= prev_ts:
             continue
-        if _session_key(prev_ts, session) != _session_key(curr_ts, session):
+        if trading_hours == "RTH" and rth_window(prev_ts, symbol)[0] != rth_window(curr_ts, symbol)[0]:
+            continue
+        if trading_hours == "ETH" and _session_key(prev_ts, session) != _session_key(curr_ts, session):
             continue
         cursor = prev_ts + step
         while cursor < curr_ts:
@@ -273,13 +279,14 @@ async def query_market_range(
     *,
     now: datetime | None = None,
     include_partial: bool = False,
+    trading_hours: TradingHours = "ETH",
 ) -> MarketRange:
     """查询指定标的和周期的 K 线数据，自动从源周期聚合并计算覆盖率。"""
     from app.market.archive import archive_range_is_covered
 
-    source_period = SOURCE_PERIOD[period]
+    source_period = "1m" if trading_hours == "RTH" else SOURCE_PERIOD[period]
     logger.info(
-        "market_bars query_market_range request_id=%s symbol=%s period=%s source_period=%s start=%s end=%s include_partial=%s",
+        "market_bars query_market_range request_id=%s symbol=%s period=%s source_period=%s start=%s end=%s include_partial=%s trading_hours=%s",
         get_request_id(),
         symbol,
         period,
@@ -287,6 +294,7 @@ async def query_market_range(
         start.isoformat(),
         end.isoformat(),
         include_partial,
+        trading_hours,
     )
     source_start = floor_bucket(start, PERIOD_MINUTES[source_period])
     coverage_end = min(end, closed_boundary(now or datetime.now(UTC), source_period))
@@ -296,14 +304,20 @@ async def query_market_range(
         validate_kline_symbol(symbol), source_start, coverage_end,
     )
     source_bars = await read_stored_bars(symbol, source_period, source_start, end)
-    coverage = calculate_coverage(source_bars, start, coverage_end, source_period)
+    coverage = calculate_coverage(source_bars, start, coverage_end, source_period, symbol=symbol, trading_hours=trading_hours)
     if not coverage.complete and archive_covered:
         # Downloaded empty sessions are complete even when wall-clock buckets have
         # no trades. Keep counts unchanged and clear the false missing-bar report.
         coverage = coverage.model_copy(update={"complete": True, "missing_buckets": []})
-    bars = source_bars if period == source_period else aggregate_bars(source_bars, period, now=now, include_partial=include_partial)
-    bars = [bar for bar in bars if bar.timestamp >= start and bar.timestamp < end
-        and (include_partial or bar.timestamp < closed_boundary(now or datetime.now(UTC),period))]
+    if trading_hours == "RTH":
+        bars = aggregate_session_bars(source_bars, period, symbol, trading_hours)
+        closed_until = min(end, now or datetime.now(UTC))
+        bars = [bar for bar in bars if start <= bar.timestamp < end
+            and (include_partial or bucket_end(bar.timestamp, period, symbol, trading_hours) <= closed_until)]
+    else:
+        bars = source_bars if period == source_period else aggregate_bars(source_bars, period, now=now, include_partial=include_partial)
+        bars = [bar for bar in bars if bar.timestamp >= start and bar.timestamp < end
+            and (include_partial or bar.timestamp < closed_boundary(now or datetime.now(UTC),period))]
     logger.info(
         "market_bars query_market_range result request_id=%s symbol=%s period=%s source_bars=%d returned_bars=%d coverage_expected=%d coverage_actual=%d coverage_complete=%s missing=%d",
         get_request_id(),
@@ -319,7 +333,8 @@ async def query_market_range(
     return MarketRange(
         symbol=symbol,
         period=period,
-        bars=enrich_api_bars(bars, symbol=symbol, timeframe=period),
+        trading_hours=trading_hours,
+        bars=enrich_api_bars(bars, symbol=symbol, timeframe=period, trading_hours=trading_hours),
         coverage=coverage,
     )
 
@@ -329,7 +344,8 @@ async def backfill_range(provider: MassiveHistoricalProvider, query: HistoricalQ
     from app.market.archive import write_archive_coverage, write_archive_records
 
     symbol = validate_kline_symbol(query.symbol)
-    source_start = floor_bucket(query.start, PERIOD_MINUTES[SOURCE_PERIOD[query.period.value]])
+    source_period = "1m" if query.trading_hours == "RTH" else SOURCE_PERIOD[query.period.value]
+    source_start = floor_bucket(query.start, PERIOD_MINUTES[source_period])
     try:
         # Bound interactive retries, writes and the final read as one request.
         # Long-running collectors continue using get_archive_range directly.
@@ -339,7 +355,7 @@ async def backfill_range(provider: MassiveHistoricalProvider, query: HistoricalQ
                 await write_archive_records(session, batch.records)
                 if batch.covered_until is not None:
                     await write_archive_coverage(session, symbol, source_start, min(query.end, batch.covered_until))
-            return await query_market_range(symbol, query.period.value, query.start, query.end)
+            return await query_market_range(symbol, query.period.value, query.start, query.end, trading_hours=query.trading_hours)
     except TimeoutError as exc:
         logger.warning(
             "market_bars backfill_timeout request_id=%s symbol=%s period=%s start=%s end=%s timeout_seconds=%s",
@@ -371,7 +387,7 @@ class LocalFirstMarketProvider:
             query.start.isoformat(),
             query.end.isoformat(),
         )
-        local = await query_market_range(storage_symbol, query.period.value, query.start, query.end)
+        local = await query_market_range(storage_symbol, query.period.value, query.start, query.end, trading_hours=query.trading_hours)
         if local.coverage.complete:
             logger.info(
                 "market_bars provider_hit request_id=%s symbol=%s period=%s bars=%d",

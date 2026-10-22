@@ -3,17 +3,36 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 import uuid
+from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.core.database import SessionFactory
 from app.core.errors import AppError
 from app.replay.models import ReplaySession, ReplayEvent, ReplayFillRecord, ReplayOrderRecord, ReplayTradeSnapshot
-from app.replay.contracts import ReplayCommand
+from app.replay.contracts import EngineState, ReplayCommand
+from app.replay.engine import can_market_trade
+
+
+def same_command(payload: dict[str, Any], command: ReplayCommand) -> bool:
+    try:
+        saved = ReplayCommand.model_validate(payload)
+    except ValidationError:
+        # Reserved restoration/error events must report a conflict, not a 500.
+        return False
+    return saved.model_dump(mode='json') == command.model_dump(mode='json')
+
+
+def normalize_view(view: dict[str, Any]) -> dict[str, Any]:
+    """Supply legacy defaults and derive quote permissions from the saved state."""
+    state = EngineState.model_validate(view['state'])
+    return {**view, 'state': state.model_dump(mode='json'),
+            'can_market_trade': view['mode'] == 'training' and view['status'] == 'active'
+                and can_market_trade(state, view['symbol'])}
 
 
 def session_view(row: ReplaySession) -> dict[str, Any]:
-    return dict(id=row.id, mode=row.mode, symbol=row.symbol, status=row.status, revision=row.revision,
-                state=row.state, config=row.config, created_at=row.created_at.isoformat())
+    return normalize_view(dict(id=row.id, mode=row.mode, symbol=row.symbol, status=row.status, revision=row.revision,
+                               state=row.state, config=row.config, created_at=row.created_at.isoformat()))
 
 
 class ReplayRepository:
@@ -52,9 +71,9 @@ class ReplayRepository:
         async with self.factory() as db:
             event = await db.scalar(select(ReplayEvent).where(ReplayEvent.session_id==session_id, ReplayEvent.operation_id==command.operation_id))
             if event:
-                if {'period': '1m', **event.payload} != command.model_dump(mode='json'):
+                if not same_command(event.payload, command):
                     raise AppError('replay_operation_conflict', '同一操作标识不能用于不同指令', 409)
-                return event.result
+                return normalize_view(event.result)
         return None
 
     async def transact(self, scope: str, session_id: str, command: ReplayCommand,
@@ -65,12 +84,13 @@ class ReplayRepository:
                 raise AppError('replay_not_found', '回放场次不存在', 404)
             prior = await db.scalar(select(ReplayEvent).where(ReplayEvent.session_id==session_id, ReplayEvent.operation_id==command.operation_id))
             if prior:
-                if {'period': '1m', **prior.payload} != command.model_dump(mode='json'):
+                if not same_command(prior.payload, command):
                     raise AppError('replay_operation_conflict', '同一操作标识不能用于不同指令', 409)
-                return prior.result
+                return normalize_view(prior.result)
             if row.revision != command.expected_revision:
                 raise AppError('replay_revision_conflict', '场次已更新，请刷新后操作', 409)
             changed, fills, evidence = change(session_view(row))
+            changed = normalize_view(changed)
             revision = row.revision + 1
             # CAS also protects adapters that do not implement SELECT FOR UPDATE.
             count = await db.execute(update(ReplaySession).where(ReplaySession.id==session_id, ReplaySession.revision==row.revision)

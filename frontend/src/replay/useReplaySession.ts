@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createTraceId, getReplayBars, getReplayEvents, getReplaySession, sendReplayCommand } from '../api';
-import type { Bar, Period, ReplayCommandInput, ReplayEvents, ReplaySession } from '../types';
+import { canMarketTrade } from '../tradingHours';
+import type { Bar, Period, ReplayCommandInput, ReplayEvents, ReplaySession, TradingHours } from '../types';
 
 export function errorText(error:unknown):string {
   const e = error as {message?:string;detail?:unknown};
@@ -55,11 +56,14 @@ export function useReplaySession(id:string,initialPeriod:Period='1m') {
   const load = useCallback(async (signal:AbortSignal, token:number, current?:ReplaySession) => {
     const s = current ?? await getReplaySession(id,signal);
     if(token!==generation.current || signal.aborted) return;
+    const priorHours=sessionRef.current?.state.config?.trading_hours??'ETH';
+    const hours=s.state.config?.trading_hours??'ETH';
+    if(priorHours!==hours){setBars([]);setBarsByPeriod({});setDataCursor(undefined);}
     setSession(s);sessionRef.current=s;
     const cursor=observerRef.current??s.state.cursor;
     const periods=[...new Set(displayPeriods.current.length?displayPeriods.current:[periodRef.current])];
     const [responses, first] = await Promise.all([
-      Promise.all(periods.map(async period=>[period,await getReplayBars(id,period,cursor,signal,historyLimit.current)] as const)),
+      Promise.all(periods.map(async period=>[period,await getReplayBars(id,period,cursor,signal,historyLimit.current,hours)] as const)),
       getReplayEvents(id,0,signal),
     ]);
     const all = {...first,items:[...first.items]};
@@ -119,6 +123,7 @@ export function useReplaySession(id:string,initialPeriod:Period='1m') {
     try {
       const updated=await replayRequest(controller,150000,'提交超时，结果待确认，请重试确认。',()=>sendReplayCommand(id,payload,controller.signal));
       if(token!==generation.current||controller.signal.aborted) return false;
+      if((s.state.config?.trading_hours??"ETH")!==(updated.state.config?.trading_hours??"ETH")){setBars([]);setBarsByPeriod({});setDataCursor(undefined);}
       pending.current=null;setRetryAvailable(false);sessionRef.current=updated;setSession(updated);
       setLoadingSeconds(0);setLoading(true);setReady(false);readyRef.current=false;
       await replayRequest(controller,90000,'回放行情或成交记录加载超时，请重试；订单提交已确认。',()=>load(controller.signal,token,updated));
@@ -152,6 +157,11 @@ export function useReplaySession(id:string,initialPeriod:Period='1m') {
     if(working.current)return;
     setPlaying(false);periodRef.current=value;setPeriod(value);await refresh();
   }
+  async function changeTradingHours(value:TradingHours) {
+    if(working.current || pending.current || !sessionRef.current || value === (sessionRef.current.state.config?.trading_hours ?? "ETH"))return;
+    setPlaying(false);
+    await command({type:"set_trading_hours",trading_hours:value});
+  }
   const changeDisplayPeriods=useCallback(async(values:Period[])=>{
     const unique=[...new Set(values)].slice(0,4);
     if(unique.join(',')===displayPeriods.current.join(','))return;
@@ -160,6 +170,6 @@ export function useReplaySession(id:string,initialPeriod:Period='1m') {
     if(pending.current)return;
     await refresh();
   },[refresh]);
-  return {session,bars,barsByPeriod,dataCursor,events,period,changePeriod,changeDisplayPeriods,observedCursor,observe,playing,setPlaying,busy,loading,loadingSeconds,historyExpanded,error,retryAvailable,
+  return {session,bars,barsByPeriod,dataCursor,events,period,changePeriod,changeDisplayPeriods,changeTradingHours,canMarketTrade:!!session&&canMarketTrade(session),observedCursor,observe,playing,setPlaying,busy,loading,loadingSeconds,historyExpanded,error,retryAvailable,
     command,refresh,cancelLoad,loadMoreHistory,canTrade:ready&&!!session&&session.status==='active'&&!busy&&!observedCursor&&!retryAvailable};
 }

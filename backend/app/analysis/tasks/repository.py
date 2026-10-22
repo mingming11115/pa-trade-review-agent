@@ -25,6 +25,7 @@ from app.analysis.tasks.models import (
 )
 from app.core.database import SessionFactory
 from app.core.errors import AppError
+from app.core.models import TradingHours
 
 
 UTC = timezone.utc
@@ -156,11 +157,12 @@ class AnalysisTaskRepository:
         *,
         symbol: str,
         period: str,
+        trading_hours: TradingHours = "ETH",
         title: str | None = None,
     ) -> AnalysisTask:
         existing = await self.find_live_analysis_task(owner_id, symbol, period)
         if existing is not None:
-            return existing
+            return await self._set_live_trading_hours(owner_id, existing.id, trading_hours)
         normalized = normalize_analysis_symbol(symbol)
         try:
             return await self.create_task(
@@ -169,7 +171,7 @@ class AnalysisTaskRepository:
                     kind="analysis",
                     title=title or f"{normalized} · {period}",
                     description="实时 K 线分析任务",
-                    config={"symbol": normalized, "period": period},
+                    config={"symbol": normalized, "period": period, "trading_hours": trading_hours},
                 ),
             )
         except AppError as exc:
@@ -178,7 +180,23 @@ class AnalysisTaskRepository:
             found = await self.find_live_analysis_task(owner_id, symbol, period)
             if found is None:
                 raise
-            return found
+            return await self._set_live_trading_hours(owner_id, found.id, trading_hours)
+
+    async def _set_live_trading_hours(self, owner_id: uuid.UUID | None, task_id: uuid.UUID, trading_hours: TradingHours) -> AnalysisTask:
+        """Update the next preview's hours; existing runs keep their frozen query."""
+        async with self.sessions() as session:
+            record = await session.scalar(select(AnalysisTask).where(
+                AnalysisTask.id == task_id, _owner_clause(AnalysisTask.user_id, owner_id),
+            ).with_for_update())
+            if record is None:
+                raise AppError("analysis_task_not_found", "分析任务不存在", 404)
+            if record.config_json.get("trading_hours", "ETH") != trading_hours:
+                record.config_json = {**record.config_json, "trading_hours": trading_hours}
+                record.version += 1
+                record.updated_at = datetime.now(UTC)
+                await session.commit()
+                await session.refresh(record)
+            return record
 
     async def get_task(self, owner_id: uuid.UUID | None, task_id: uuid.UUID, *, lock: bool = False) -> AnalysisTask:
         statement = select(AnalysisTask).where(

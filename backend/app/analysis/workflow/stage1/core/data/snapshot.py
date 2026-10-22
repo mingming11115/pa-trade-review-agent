@@ -19,7 +19,7 @@ def frame_is_pure_closed(frame: KlineFrame) -> bool:
 
 def frames_equal_for_chart(a: KlineFrame, b: KlineFrame) -> bool:
     """True when two frames would render the same candles and EMA (ignore snapshot time)."""
-    if a.symbol != b.symbol or a.timeframe != b.timeframe:
+    if a.symbol != b.symbol or a.timeframe != b.timeframe or a.trading_hours != b.trading_hours:
         return False
     if len(a.bars) != len(b.bars):
         return False
@@ -175,6 +175,7 @@ def build_live_frame(
                     close=b.close,
                     volume=b.volume,
                     closed=not is_forming,
+                    trading_hours=b.trading_hours,
                 )
             )
         )
@@ -185,6 +186,7 @@ def build_live_frame(
         bars=tuple(rebased),
         indicators=indicators,
         snapshot_ts_local_ms=int(time() * 1000),
+        trading_hours=rebased[0].trading_hours if rebased else "ETH",
     )
 
 
@@ -200,6 +202,7 @@ def _rebase_closed_bars(closed_raw: list[KlineBar]) -> list[KlineBar]:
                 close=b.close,
                 volume=b.volume,
                 closed=True,
+                trading_hours=b.trading_hours,
             )
         )
         for i, b in enumerate(closed_raw)
@@ -253,4 +256,5 @@ def build_analysis_frame(
         bars=tuple(rebased),
         indicators=indicators,
         snapshot_ts_local_ms=int(time() * 1000),
+        trading_hours=rebased[0].trading_hours if rebased else "ETH",
     )

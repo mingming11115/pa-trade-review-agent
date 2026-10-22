@@ -160,3 +160,15 @@ async def test_unconfirmed_local_minute_cannot_be_matched_even_with_coverage(arc
         await archive.write_archive_coverage(db, 'MES', start, start + timedelta(minutes=3))
     with pytest.raises(AppError, match='未确认'):
         await ReplayMarket().load('MES', start, start + timedelta(minutes=3), require_complete=True)
+
+
+@pytest.mark.asyncio
+async def test_rth_random_start_ignores_archive_ending_with_night_minutes(archive_db, monkeypatch):
+    import app.replay.market as module
+    from app.market.trading_hours import in_trading_hours
+    start = await seed(archive_db, monkeypatch, offsets=(0, 1, 2, 900, 901),
+                       start=datetime(2026, 7, 6, 13, 29, tzinfo=UTC))
+    monkeypatch.setattr(module.random, 'random', lambda: 0.99)
+    selected = await ReplayMarket().random_start('MES', trading_hours='RTH')
+    assert in_trading_hours(selected, 'MES', 'RTH')
+    assert selected in [start + timedelta(minutes=1), start + timedelta(minutes=2)]

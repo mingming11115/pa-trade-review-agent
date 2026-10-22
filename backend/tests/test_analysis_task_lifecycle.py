@@ -50,7 +50,7 @@ def test_analysis_task_only_accepts_symbol_and_period() -> None:
     from app.analysis.tasks.models import AnalysisTaskCreate
 
     task = AnalysisTaskCreate(kind="analysis", title="最新行情", config={"symbol": "ES", "period": "5m"})
-    assert task.config.model_dump(mode="json") == {"symbol": "ES", "period": "5m"}
+    assert task.config.model_dump(mode="json") == {"symbol": "ES", "period": "5m", "trading_hours": "ETH"}
 
     with pytest.raises(ValidationError):
         AnalysisTaskCreate(

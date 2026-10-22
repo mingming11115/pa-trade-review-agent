@@ -497,6 +497,7 @@ class DemoAnalysisWorkflow:
                 [bar.timestamp for bar in bars],
                 symbol=symbol,
                 timeframe=query.period.value,
+                trading_hours=query.trading_hours,
             )
             if bars
             else []
@@ -634,14 +635,18 @@ class DemoAnalysisWorkflow:
         query = state["query"]
         resolved_symbol = resolve_contract_symbol(query.symbol, query.start, query.end)
         lookback_periods = 50  # 初始预热根数
+        if query.trading_hours == "RTH":
+            lookback_periods = max(lookback_periods, 86400 // PERIOD_SECONDS[query.period])
         indicator_source_bars: list[Bar] = []
         previous_count = -1
         # 最多扩展 4 次，每次翻倍预热根数直到满足最低要求
         for _ in range(4):
             expanded_start = query.start - timedelta(seconds=PERIOD_SECONDS[query.period] * lookback_periods)
             expanded_query = query.model_copy(update={"symbol": resolved_symbol, "start": expanded_start})
-            indicator_source_bars = aggregate_bars(await self.provider.get_range(expanded_query), query.period)
-            if len(indicator_source_bars) >= MIN_CLOSED_BARS or len(indicator_source_bars) <= previous_count:
+            indicator_source_bars = aggregate_bars(await self.provider.get_range(expanded_query), query.period,
+                symbol=resolved_symbol, trading_hours=query.trading_hours)
+            if len(indicator_source_bars) >= MIN_CLOSED_BARS or (
+                    query.trading_hours == "ETH" and len(indicator_source_bars) <= previous_count):
                 break
             previous_count = len(indicator_source_bars)
             lookback_periods *= 2
@@ -650,6 +655,7 @@ class DemoAnalysisWorkflow:
             indicator_source_bars,
             symbol=resolved_symbol,
             timeframe=query.period.value,
+            trading_hours=query.trading_hours,
         )
         bars = list(indicator_source_bars)
         trace = list(state.get("trace", []))
@@ -668,7 +674,7 @@ class DemoAnalysisWorkflow:
         )
         # OHLC 合法时检查交易时段内是否有缺桶
         missing = (
-            find_missing_session_buckets(bars, query.period.value, symbol)
+            find_missing_session_buckets(bars, query.period.value, symbol, trading_hours=query.trading_hours)
             if ohlc_ok
             else []
         )
@@ -1308,7 +1314,7 @@ class DemoAnalysisWorkflow:
                 "detected_patterns": ["string"],
                 "support_levels": ["number"],
                 "resistance_levels": ["number"],
-                "bar_by_bar_summary": [{"bar_ref": {"bar_timestamp": "ISO-8601", "timeframe": "1m|5m|...", "session": "CME|US_EQUITY_RTH", "day_index": "integer"}, "bar_type": "必须服从程序值", "role": "structure|signal|entry|confirmation|noise|trap|climax|test", "context_effect": "strengthens_bull|weakens_bull|strengthens_bear|weakens_bear|neutral|transition", "summary": "string"}],
+                "bar_by_bar_summary": [{"bar_ref": {"bar_timestamp": "ISO-8601", "timeframe": "1m|5m|...", "session": "CME|US_EQUITY_RTH", "trading_hours": snapshot.query.trading_hours, "day_index": "integer"}, "bar_type": "必须服从程序值", "role": "structure|signal|entry|confirmation|noise|trap|climax|test", "context_effect": "strengthens_bull|weakens_bull|strengthens_bear|weakens_bear|neutral|transition", "summary": "string"}],
                 "gate_trace": [{"node_id": "严格依次1.2,not_extreme_chaos,direction_decidable,background_near_term_coherent,momentum_enough", "question": "string", "answer": "是|否|中性|等待|不适用", "reason": "string", "bar_range": {"start": "bar_ref", "end": "bar_ref"}}],
                 "gate_result": "proceed|wait|unknown",
                 "summary": "string",
@@ -1321,6 +1327,7 @@ class DemoAnalysisWorkflow:
             "previous_context": snapshot.previous_context.model_dump(mode="json") if snapshot.previous_context else None,
             "symbol": snapshot.market.contract,
             "period": snapshot.market.period,
+            "trading_hours": snapshot.query.trading_hours,
         }
         return payload
 
@@ -1393,7 +1400,8 @@ class DemoAnalysisWorkflow:
     @staticmethod
     def _memory_key(query: HistoricalQuery) -> str:
         """根据查询参数生成记忆存储的唯一键。"""
-        return f"{query.dataset}:{query.symbol}:{query.period.value}:{query.start.isoformat()}:{query.end.isoformat()}"
+        key = f"{query.dataset}:{query.symbol}:{query.period.value}:{query.start.isoformat()}:{query.end.isoformat()}"
+        return f"{key}:RTH" if query.trading_hours == "RTH" else key
 
     @staticmethod
     def _build_stage1(
@@ -1458,6 +1466,7 @@ class DemoAnalysisWorkflow:
             [bar.timestamp for bar in bars],
             symbol=symbol,
             timeframe=timeframe,
+            trading_hours=bars[0].trading_hours if bars else "ETH",
         )
 
         def recent_range(count: int) -> BarRange:
@@ -1647,7 +1656,8 @@ async def build_stage1_debug_preview(
     # 扩展 50 根预热 K 线
     warmup_start = query.start - timedelta(seconds=PERIOD_SECONDS[query.period] * 50)
     warmup_query = query.model_copy(update={"symbol": resolved_symbol, "start": warmup_start})
-    indicator_source_bars = aggregate_bars(await provider.get_range(warmup_query), query.period)
+    indicator_source_bars = aggregate_bars(await provider.get_range(warmup_query), query.period,
+        symbol=resolved_symbol, trading_hours=query.trading_hours)
     bars = [bar for bar in indicator_source_bars if query.start <= bar.timestamp <= query.end]
     analysis = analyze_bars(bars)
     previous_raw = await memory_store.load(DemoAnalysisWorkflow._memory_key(query))

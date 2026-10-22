@@ -7,12 +7,14 @@ import uuid
 from sqlalchemy import select
 from app.core.errors import AppError
 from app.replay.models import ReplayDraftState, ReplayEvent, ReplaySavedVersion, ReplaySession
-from app.replay.repository import ReplayRepository, session_view
+from app.replay.repository import ReplayRepository, normalize_view, session_view
 
 
 def version_view(row: ReplaySavedVersion) -> dict[str, Any]:
+    snapshot = deepcopy(row.snapshot)
+    snapshot['session'] = normalize_view(snapshot['session'])
     return dict(id=row.id, name=row.name, created_at=row.created_at.isoformat(),
-                source_revision=row.source_revision, **deepcopy(row.snapshot))
+                source_revision=row.source_revision, **snapshot)
 
 
 class SavedReplays:
@@ -31,7 +33,7 @@ class SavedReplays:
             rows = await db.scalars(select(ReplaySavedVersion).where(ReplaySavedVersion.scope==scope)
                                     .order_by(ReplaySavedVersion.created_at.desc(), ReplaySavedVersion.id).limit(limit).offset(offset))
             return [dict(id=r.id, name=r.name, created_at=r.created_at.isoformat(), source_revision=r.source_revision,
-                         session=r.snapshot['session']) for r in rows]
+                         session=normalize_view(r.snapshot['session'])) for r in rows]
 
     async def legacy(self, scope: str, limit: int, offset: int) -> list[dict[str, Any]]:
         async with self.repository.factory() as db:

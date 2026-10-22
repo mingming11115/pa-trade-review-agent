@@ -1,3 +1,4 @@
+import { canMarketTrade } from '../tradingHours';
 import { useState } from 'react';
 import type { ReplaySession, ReplayCommandInput } from '../types';
 
@@ -11,6 +12,6 @@ export function PositionPanel({session,disabled,command}:{session:ReplaySession;
       <label>持仓止损<input aria-label="持仓止损" type="number" step={session.config.instrument.tick_size} value={stop} onChange={e=>setStop(e.target.value)}/></label>
       <label>持仓止盈<input aria-label="持仓止盈" type="number" step={session.config.instrument.tick_size} value={profit} onChange={e=>setProfit(e.target.value)}/></label>
       <button>更新保护价</button></fieldset></form>
-      <button disabled={disabled} onClick={()=>void command({type:'place_order',reduce_only:true,side:p.quantity>0?'sell':'buy',quantity:Math.abs(p.quantity)})}>提交全部平仓</button></>}
+      <button disabled={disabled||!canMarketTrade(session)} onClick={()=>void command({type:'place_order',reduce_only:true,side:p.quantity>0?'sell':'buy',quantity:Math.abs(p.quantity)})}>提交全部平仓</button></>}
   </section>;
 }

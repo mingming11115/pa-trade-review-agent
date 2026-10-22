@@ -13,6 +13,7 @@ from types import MappingProxyType
 from typing import Any
 
 from app.core.errors import AppError
+from app.core.models import TradingHours
 
 from app.analysis.workflow.stage1.core.compat import AnalysisRecord, build_decision_stance_guidance, format_epoch_for_display, normalize_stance
 from app.analysis.workflow.stage1.core.pattern_routing import (
@@ -37,8 +38,10 @@ _KLINE_INDICATOR_NOTE = (
 )
 
 _KLINE_INDEX_NOTE = (
-    "棒身份约定：机器引用必须完整包含 bar_timestamp、timeframe、session、day_index；"
-    "CME 按 America/Chicago 17:00 实际开盘重置，US_EQUITY_RTH 按 America/New_York 09:30 重置，均自动处理夏令时。"
+    "棒身份约定：机器引用必须完整包含 bar_timestamp、timeframe、session、trading_hours、day_index；"
+    "trading_hours 必须逐字使用当前数据表的 ETH/RTH，不能套用示例。RTH 日内编号从纽约当地开盘重置："
+    "ES/MES/NQ/MNQ 为 09:30，MGC 为 08:20。ETH 的 CME 编号按 America/Chicago 17:00 重置，"
+    "US_EQUITY_RTH 按 America/New_York 09:30 重置，均自动处理夏令时。"
 )
 
 # ── Language (both stages, thinking + final output) ───────────────────────────
@@ -199,10 +202,10 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
   "risk_warning": "",
   "bar_analysis": {
     "always_in": "long|short|neutral",
-    "last_closed_bar": {"bar_timestamp":"2026-08-11T20:00:00Z","timeframe":"5m","session":"CME","day_index":36},
+    "last_closed_bar": {"bar_timestamp":"2026-08-11T20:00:00Z","timeframe":"5m","session":"CME","trading_hours":"__TRADING_HOURS__","day_index":36},
     "bar_type": "trend_bull|trend_bear|doji|inside|outside_bull|outside_bear|flat|other",
     "signal_bar": {
-      "bar_ref": {"bar_timestamp":"2026-08-11T19:55:00Z","timeframe":"5m","session":"CME","day_index":35},
+      "bar_ref": {"bar_timestamp":"2026-08-11T19:55:00Z","timeframe":"5m","session":"CME","trading_hours":"__TRADING_HOURS__","day_index":35},
       "quality": "strong|medium|weak|invalid（bar_ref=null 时必须填 invalid，禁止填 null）",
       "reason": "信号棒质量判断"
     },
@@ -211,7 +214,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
   },
   "bar_by_bar_summary": [
     {
-      "bar_ref": {"bar_timestamp":"2026-08-11T20:00:00Z","timeframe":"5m","session":"CME","day_index":36},
+      "bar_ref": {"bar_timestamp":"2026-08-11T20:00:00Z","timeframe":"5m","session":"CME","trading_hours":"__TRADING_HOURS__","day_index":36},
       "role": "structure|signal|entry|confirmation|noise|trap|climax|test",
       "bar_type": "trend_bull|trend_bear|doji|inside|outside_bull|outside_bear|flat|other",
       "context_effect": "strengthens_bull|weakens_bull|strengthens_bear|weakens_bear|weakened_bull|weakened_bear|neutral|transition",
@@ -228,7 +231,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
       "reason": "K线结构特征清晰，可识别为正常通道",
       "branch": "normal_channel",
       "section": "K线识别",
-      "bar_range": {"start":{"bar_timestamp":"2026-08-11T19:05:00Z","timeframe":"5m","session":"CME","day_index":25},"end":{"bar_timestamp":"2026-08-11T20:00:00Z","timeframe":"5m","session":"CME","day_index":36}}
+      "bar_range": {"start":{"bar_timestamp":"2026-08-11T19:05:00Z","timeframe":"5m","session":"CME","trading_hours":"__TRADING_HOURS__","day_index":25},"end":{"bar_timestamp":"2026-08-11T20:00:00Z","timeframe":"5m","session":"CME","trading_hours":"__TRADING_HOURS__","day_index":36}}
     },
     {
       "node_id": "direction_decidable",
@@ -237,7 +240,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
       "reason": "LH+LL 结构清晰",
       "branch": "bearish",
       "section": "方向判断",
-      "bar_range": {"start":{"bar_timestamp":"2026-08-11T19:25:00Z","timeframe":"5m","session":"CME","day_index":29},"end":{"bar_timestamp":"2026-08-11T20:00:00Z","timeframe":"5m","session":"CME","day_index":36}}
+      "bar_range": {"start":{"bar_timestamp":"2026-08-11T19:25:00Z","timeframe":"5m","session":"CME","trading_hours":"__TRADING_HOURS__","day_index":29},"end":{"bar_timestamp":"2026-08-11T20:00:00Z","timeframe":"5m","session":"CME","trading_hours":"__TRADING_HOURS__","day_index":36}}
     }
   ],
   "gate_result": "proceed"
@@ -268,7 +271,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 - 每条只写该 K 线对当前结构的增量作用，不写下单价格、不写止损止盈。
 - `role` 只能使用示例中的英文枚举（structure/signal/entry/confirmation/noise/trap/climax/test 等）；延续/跟随棒统一写 `confirmation`，不要写 `continuation`。
 - **`reversal_attempt`、`mtr`、`h2`、`l2` 等形态标签只能写在顶层 `detected_patterns` 数组中；禁止用作 `bar_by_bar_summary[].role`。**
-- 棒的先后只按 `bar_timestamp` 判断；最新已收盘棒的跟随通常为 pending。`day_index` 仅用于显示，不可脱离 timestamp/timeframe/session 单独充当身份。
+- 棒的先后只按 `bar_timestamp` 判断；最新已收盘棒的跟随通常为 pending。`day_index` 仅用于显示，不可脱离 timestamp/timeframe/session/trading_hours 单独充当身份。
 - `bar_type` **必须与程序 K线几何特征表「类型」列完全一致，禁止自行推断或覆盖**。程序对每根 K 线只输出**一个** `bar_type`，按下列优先级判定（命中即停止，与 `kline_features._classify_bar` 一致）：
   1. **与前棒关系优先**：`inside`（高低点均在上一根范围内）→ `outside_bull` / `outside_bear`（外包上一根，按收阳/收阴）
   2. **无关系类时再判单棒几何**：`flat`（无有效振幅）→ `doji`（实体≤25%）→ `trend_bull`（阳线且收盘位置≥65%）→ `trend_bear`（阴线且收盘位置≤35%）→ `other`
@@ -311,7 +314,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 - 节点 always_in / momentum_enough 的 question 须与决策树原文一致（含 Always In 空格、用「支持」而非仅改措辞）
 
 **每条 gate_trace / decision_trace 必须包含 bar_range（K线依据，由你自行判断）：**
-- `bar_range` 必须是 `{start: bar_ref, end: bar_ref}`；start 是较早棒、end 是较晚棒，两个端点都完整包含 timestamp/timeframe/session/day_index
+- `bar_range` 必须是 `{start: bar_ref, end: bar_ref}`；start 是较早棒、end 是较晚棒，两个端点都完整包含 timestamp/timeframe/session/trading_hours/day_index
 - 端点必须逐字照抄当前数据表，不得生成相对 K 编号，不得仅填写 day_index
 - **每个节点的 bar_range 应不同**（除非该节点确实与上一节点使用完全相同窗口）；禁止所有节点照抄同一个范围
 - **reason 里引用的每根棒**都必须落在该条 `bar_range` 的时间范围内，并使用「日内第 N 根 + 开盘时间 + 周期」表述。
@@ -380,10 +383,10 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
   },
   "bar_analysis": {
     "always_in": "long|short|neutral",
-    "last_closed_bar": {"bar_timestamp":"2026-08-11T20:00:00Z","timeframe":"5m","session":"CME","day_index":36},
+    "last_closed_bar": {"bar_timestamp":"2026-08-11T20:00:00Z","timeframe":"5m","session":"CME","trading_hours":"__TRADING_HOURS__","day_index":36},
     "bar_type": "【必须与阶段一 bar_analysis.bar_type 完全一致，不得重新推断】trend_bull|trend_bear|doji|inside|outside_bull|outside_bear|flat|other",
     "signal_bar": {
-      "bar_ref": {"bar_timestamp":"2026-08-11T19:55:00Z","timeframe":"5m","session":"CME","day_index":35},
+      "bar_ref": {"bar_timestamp":"2026-08-11T19:55:00Z","timeframe":"5m","session":"CME","trading_hours":"__TRADING_HOURS__","day_index":35},
       "quality": "strong|medium|weak|invalid",
       "pattern": "H1|H2|L1|L2|MTR|wedge|tr_boundary|breakout_pullback|none",
       "reason": "信号棒质量判断"
@@ -644,13 +647,13 @@ estimated_win_rate_reasoning：必须简要说明依据（如“宽通道顺势 
 # ── Analysis-mode–aware Stage 1 output rule ───────────────────────────────────
 
 
-def _stage1_output_reminder_for_mode(analysis_mode: str = "original") -> str:
+def _stage1_output_reminder_for_mode(analysis_mode: str = "original", *, trading_hours: TradingHours = "ETH") -> str:
     """Return Stage 1 output rules (same for original and optimized).
 
     Program prefill handles data_sufficiency/program_direction/always_in; AI outputs the five gate nodes only.
     """
     _ = analysis_mode  # reserved for future mode-specific tweaks
-    return _STAGE1_OUTPUT_REMINDER
+    return _STAGE1_OUTPUT_REMINDER.replace("__TRADING_HOURS__", trading_hours)
 
 
 _NEXT_BAR_PREDICTION_INSTRUCTION = """\
@@ -990,7 +993,7 @@ class PromptAssembler:
     def _render_kline_table(frame: KlineFrame, limit: int | None = None) -> str:
         """Render the K-line data as a text table (newest bar first)."""
         lines = [
-            "bar_timestamp | timeframe | session | day_index | 开盘价 | 最高价 | 最低价 | 收盘价 | 阳阴 | 成交量 | EMA20 | ATR14",
+            "bar_timestamp | timeframe | session | trading_hours | day_index | 开盘价 | 最高价 | 最低价 | 收盘价 | 阳阴 | 成交量 | EMA20 | ATR14",
             "--------------+-----------+---------+-----------+--------+--------+--------+--------+------+--------+-------+------",
         ]
         bars = frame.bars[:limit] if limit is not None else frame.bars
@@ -1003,7 +1006,7 @@ class PromptAssembler:
             yang_yin = bar_candle_direction_label(bar)
             dt = format_epoch_for_display(bar.ts_open, short=True)
             lines.append(
-                f"{refs[i].bar_timestamp.isoformat()} | {refs[i].timeframe} | {refs[i].session} | {refs[i].day_index} | {bar.open:<9.4f} | {bar.high:<9.4f} | "
+                f"{refs[i].bar_timestamp.isoformat()} | {refs[i].timeframe} | {refs[i].session} | {refs[i].trading_hours} | {refs[i].day_index} | {bar.open:<9.4f} | {bar.high:<9.4f} | "
                 f"{bar.low:<9.4f} | {bar.close:<9.4f} | {yang_yin:<4} | {bar.volume:<9.0f} | "
                 f"{ema_str:<10} | {atr_str}"
             )
@@ -1023,13 +1026,13 @@ class PromptAssembler:
         }
         lines = [
             f"（几何特征：最近 {shown} 根已收盘 K 线；「类型」= 单字段 bar_type，优先级 inside/outside > doji/trend/flat/other；多棒形态已用完整窗口计算）",
-            "bar_timestamp | timeframe | session | day_index | 类型 | 实体比 | 上影比 | 下影比 | 收盘位置 | Range/ATR | EMA关系 | 与前棒重叠 | ii/iii | ioi | 微双 | 缺口 | EMA缺口数 | 近5突破 | 后续",
+            "bar_timestamp | timeframe | session | trading_hours | day_index | 类型 | 实体比 | 上影比 | 下影比 | 收盘位置 | Range/ATR | EMA关系 | 与前棒重叠 | ii/iii | ioi | 微双 | 缺口 | EMA缺口数 | 近5突破 | 后续",
             "--------------+-----------+---------+-----------+------+--------+--------+--------+----------+-----------+---------+------------+--------+-----+------+-------+-----------+---------+------",
         ]
         for feat in compute_kline_geometry_features(frame, limit=limit):
             ref = refs_by_seq[feat.seq]
             lines.append(
-                f"{ref.bar_timestamp.isoformat()} | {ref.timeframe} | {ref.session} | {ref.day_index} | {feat.bar_type:<13} | "
+                f"{ref.bar_timestamp.isoformat()} | {ref.timeframe} | {ref.session} | {ref.trading_hours} | {ref.day_index} | {feat.bar_type:<13} | "
                 f"{_fmt_feature(feat.body_ratio):<6} | "
                 f"{_fmt_feature(feat.upper_wick_ratio):<6} | "
                 f"{_fmt_feature(feat.lower_wick_ratio):<6} | "
@@ -1287,7 +1290,7 @@ class PromptAssembler:
         stage1_parts = [
             *(self._load(name) for name in STAGE1_TASK_PROMPT_TXT_FILES),
             *([pattern_block] if pattern_block else []),
-            _stage1_output_reminder_for_mode(analysis_mode),
+            _stage1_output_reminder_for_mode(analysis_mode, trading_hours=frame.trading_hours),
         ]
         stage1_context = "\n\n---\n\n".join(p for p in stage1_parts if p)
         kline_table = self._render_kline_table(frame)
@@ -1307,8 +1310,8 @@ class PromptAssembler:
             f"{stage1_context}\n\n"
             "---\n\n"
             f"## 当前分析目标\n\n"
-            f"品种:{frame.symbol} 周期:{frame.timeframe} K线数量:{n_bars}\n"
-            "（机器身份=bar_timestamp+timeframe+session；day_index 从实际交易时段开盘起编号；"
+            f"品种:{frame.symbol} 周期:{frame.timeframe} 交易时段:{frame.trading_hours} K线数量:{n_bars}\n"
+            "（机器身份=bar_timestamp+timeframe+session+trading_hours；day_index 从实际交易时段开盘起编号；"
             "每个决策节点的 bar_range 使用完整 start/end 棒身份）\n\n"
             f"## ⚠️ 分析窗口分层规则（与程序 background_near_term_coherent/program_direction/always_in 预填一致，必须遵守）\n\n"
             f"你收到全部 {n_bars} 根 K 线数据；下列分层与 `市场诊断框架.txt`、程序三窗口摘要**同一标准**：\n\n"
@@ -1350,7 +1353,7 @@ class PromptAssembler:
         stage1_parts = [
             *(self._load(name) for name in STAGE1_TASK_PROMPT_TXT_FILES),
             *([pattern_block] if pattern_block else []),
-            _stage1_output_reminder_for_mode(analysis_mode),
+            _stage1_output_reminder_for_mode(analysis_mode, trading_hours=frame.trading_hours),
         ]
         stage1_context = "\n\n---\n\n".join(p for p in stage1_parts if p)
         n_bars = len(frame.bars)
@@ -1383,8 +1386,8 @@ class PromptAssembler:
             f"{stage1_context}\n\n"
             "---\n\n"
             f"## 当前分析目标\n\n"
-            f"品种:{frame.symbol} 周期:{frame.timeframe} K线数量:{n_bars} 新增已收盘K线:{new_count}\n"
-            "（身份=bar_timestamp+timeframe+session；day_index=实际交易时段开盘序号；bar_range 使用结构化 start/end）\n\n"
+            f"品种:{frame.symbol} 周期:{frame.timeframe} 交易时段:{frame.trading_hours} K线数量:{n_bars} 新增已收盘K线:{new_count}\n"
+            "（身份=bar_timestamp+timeframe+session+trading_hours；day_index=实际交易时段开盘序号；bar_range 使用结构化 start/end）\n\n"
             "## 上一轮已完成分析（仅作为延续上下文）\n\n"
             f"```json\n{json.dumps(previous_summary, ensure_ascii=False, indent=2)}\n```\n\n"
             f"## 新增 K线数据（共{new_count}根，含完整棒身份与阳阴列）\n\n"
@@ -1454,8 +1457,8 @@ class PromptAssembler:
             "- 输出仍必须是完整阶段一 JSON，而不是差异补丁。\n\n"
             f"{_INCREMENTAL_OUTPUT_HARD_RULES}\n\n"
             f"## 当前分析目标更新\n\n"
-            f"品种:{frame.symbol} 周期:{frame.timeframe} K线数量:{n_bars} 新增已收盘K线:{new_count}\n"
-            "（身份=bar_timestamp+timeframe+session；day_index=实际交易时段开盘序号；bar_range 使用结构化 start/end）\n\n"
+            f"品种:{frame.symbol} 周期:{frame.timeframe} 交易时段:{frame.trading_hours} K线数量:{n_bars} 新增已收盘K线:{new_count}\n"
+            "（身份=bar_timestamp+timeframe+session+trading_hours；day_index=实际交易时段开盘序号；bar_range 使用结构化 start/end）\n\n"
             "## 上一轮已完成分析（仅作为延续上下文）\n\n"
             f"```json\n{json.dumps(previous_summary, ensure_ascii=False, indent=2)}\n```\n\n"
             f"## 新增 K线数据（共{new_count}根，含完整棒身份与阳阴列）\n\n"
@@ -1661,7 +1664,7 @@ class PromptAssembler:
                     max_chars_per_entry=max_chars,
                 )
             )
-        stage2_parts.append(_STAGE2_OUTPUT_CONTRACT)
+        stage2_parts.append(_STAGE2_OUTPUT_CONTRACT.replace("__TRADING_HOURS__", frame.trading_hours))
         if enable_next_bar_prediction:
             stage2_parts.append(_NEXT_BAR_PREDICTION_INSTRUCTION)
         else:

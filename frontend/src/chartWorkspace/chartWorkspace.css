@@ -21,3 +21,61 @@
 .chart-workspace-tabs { display:flex; gap:6px; padding:5px 10px; }
 .chart-workspace-error { padding:8px 10px; color:#a04e21; background:#fff7e6; font-size:12px; }
 .chart-workspace-error button { margin-left:8px; }
+
+.chart-workspace-actions { min-width:0; max-width:100%; }
+.chart-workspace .chart-workspace-actions .chart-toolbar { min-height:0; padding:0; border:0; background:transparent; }
+.chart-workspace-actions .chart-toolbar-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.chart-workspace-actions .chart-toolbar-hint { display:none; }
+
+.chart-workspace-body { position:relative; padding:0 0 28px 52px; }
+.chart-workspace-drawings { position:absolute; inset:0; z-index:7; pointer-events:none; }
+.chart-workspace-drawings > .chart-drawing-ui { inset:0; }
+
+/* Setup belongs to the entire workspace, so opening it cannot stretch one pane. */
+.chart-workspace-replay:empty { display:none; }
+.chart-workspace-replay { color:#dbdbdb; background:#0f0f0f; color-scheme:dark; }
+.chart-workspace-replay > .chart-replay-panel {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  align-items:start;
+  gap:12px;
+  color:#dbdbdb;
+  background:#0f0f0f;
+  border-bottom:1px solid #2e2e2e;
+}
+.chart-workspace-replay .replay-start-origin { grid-column:1 / -1; }
+.replay-start-origin,.replay-start-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-width:0; }
+.replay-start-actions { margin-left:auto; }
+.chart-workspace-replay .replay-start-actions { flex-wrap:nowrap; }
+.chart-workspace-replay .replay-start-settings { min-width:0; border:0; padding:0; }
+.chart-workspace-replay .replay-start-settings > label { color:#dbdbdb; margin:0; }
+.chart-workspace-replay .replay-start-settings .replay-settings { margin-top:10px; }
+.chart-workspace-replay .chart-replay-panel :is(input,select,button) {
+  max-width:100%;
+  box-sizing:border-box;
+  background:#1e1e1e;
+  border-color:#3a3a3a;
+  color:#dbdbdb;
+}
+.chart-workspace-replay .chart-replay-panel button { white-space:nowrap; }
+.chart-workspace-replay .chart-replay-panel button:hover:enabled { background:#2e2e2e; }
+.chart-workspace-replay :is(.replay-start-summary,.replay-required-label,.replay-settings-help) { color:#a3a3a3; }
+.chart-workspace-replay .replay-settings summary { color:#dbdbdb; }
+.chart-workspace-replay .chart-replay-panel .replay-start-action { background:#2962ff; border-color:#2962ff; color:#fff; }
+.chart-workspace-replay .chart-replay-panel .replay-start-action:hover:enabled { background:#4072ff; }
+.chart-workspace-replay .replay-start-menu > [role=menu] { background:#1e1e1e; border-color:#3a3a3a; }
+.chart-workspace-replay .replay-start-menu [role=menuitem]:is(:hover,:focus-visible) { background:#2e2e2e; }
+.chart-workspace-replay :is(button,input,select,summary):focus-visible { outline:2px solid #82a6ff; outline-offset:2px; }
+.chart-workspace-replay .chart-replay-panel [role=alert] { color:#ff8b95; }
+.chart-workspace-replay .chart-replay-panel > :is([role=alert],[role=status]) { grid-column:1 / -1; }
+.chart-workspace-replay .replay-date-selection { min-width:0; }
+.chart-workspace-replay .replay-date-selection label { flex-wrap:wrap; min-width:0; }
+.chart-workspace-replay .replay-start-action { width:auto; flex:0 0 auto; }
+@media (max-width:620px) {
+  .chart-workspace-replay > .chart-replay-panel { grid-template-columns:minmax(0,1fr); }
+  .chart-workspace-replay .replay-start-actions { justify-self:end; }
+}
+
+/* Keep four-pane candles readable; shorter windows can scroll to replay controls. */
+.chart-workspace[data-layout="4"] .chart-workspace-pane { --chart-base-height:max(280px,calc((100dvh - 460px) / 2)); }
+.chart-workspace[data-layout="4"]:has(.chart-replay-panel) .chart-workspace-pane { --chart-base-height:max(280px,calc((100dvh - 530px) / 2)); }

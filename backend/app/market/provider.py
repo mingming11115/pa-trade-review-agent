@@ -16,6 +16,7 @@ from app.core.errors import ProviderError
 from app.core.logging_context import get_request_id
 from app.core.models import Bar, HistoricalQuery
 from app.market.archive import ArchiveBatch
+from app.market.trading_hours import aggregate_session_bars
 
 
 TIMESTAMP_FIELDS = ("timestamp", "ts_event", "ts", "time", "datetime")
@@ -113,6 +114,8 @@ class MassiveHistoricalProvider:
             payload["symbols"],
             len(bars),
         )
+        if query.trading_hours == "RTH":
+            return aggregate_session_bars(bars, query.period.value, query.symbol, query.trading_hours)
         return bars
 
     async def get_archive_range(self, symbol: str, start: datetime, end: datetime) -> ArchiveBatch:

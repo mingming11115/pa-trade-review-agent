@@ -100,6 +100,7 @@ async def ensure_live_analysis_task(
             user.id,
             symbol=payload.symbol,
             period=payload.period.value,
+            trading_hours=payload.trading_hours,
             title=payload.title,
         )
     )

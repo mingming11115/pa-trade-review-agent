@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from fastapi import APIRouter, Depends, Query
 from app.auth.service import UserPublic, current_user
-from app.core.models import Period
+from app.core.models import Period, TradingHours
 from app.replay.contracts import ReplayCommand, SessionCreate
 from app.replay.service import ReplayService
 
@@ -40,11 +40,12 @@ async def command(session_id: str, payload: ReplayCommand, user: UserPublic = De
 
 @router.get('/sessions/{session_id}/bars')
 async def bars(session_id: str, period: Period = Period.minute_1, cursor: datetime | None = None, limit: int = Query(500, ge=1, le=2000),
+               trading_hours: TradingHours | None = None,
                user: UserPublic = Depends(current_user), service: ReplayService = Depends(get_replay_service)) -> dict:
     if cursor and cursor.tzinfo is None:
         from app.replay.service import reject
         reject('时间必须包含时区')
-    return await service.bars(scope(user), session_id, period.value, cursor, limit)
+    return await service.bars(scope(user), session_id, period.value, cursor, limit, trading_hours=trading_hours)
 
 
 @router.get('/sessions/{session_id}/events')

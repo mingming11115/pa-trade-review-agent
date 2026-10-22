@@ -1,20 +1,32 @@
 from datetime import timedelta
 from decimal import Decimal
 
+from app.market.trading_hours import in_trading_hours
 from app.replay.accounting import apply_fill, mark_to_market
 from app.replay.contracts import EngineState, EngineResult, InstrumentSpec, MinuteSnapshot, ReplayFill
+
+
+def can_market_trade(state: EngineState, symbol: str) -> bool:
+    """A revealed quote is usable only in the selected trading window."""
+    if state.last_price is None:
+        return False
+    if state.config.trading_hours == 'ETH':
+        return True
+    return state.last_price_at is not None and in_trading_hours(state.last_price_at, symbol, 'RTH')
 
 
 def match_minute(state: EngineState, minute: MinuteSnapshot, instrument: InstrumentSpec) -> EngineResult:
     s = state.model_copy(deep=True)
     result = EngineResult(state=s)
-    if minute.timestamp < s.cursor or not minute.confirmed:
+    if (minute.timestamp < s.cursor or not minute.confirmed
+            or not in_trading_hours(minute.timestamp, instrument.symbol, s.config.trading_hours)):
         return result
     slip = instrument.tick_size * s.config.slippage_ticks
 
     def fill(order_id: str, side: str, quantity: int, price: Decimal, reason: str, ambiguous: bool = False) -> None:
         item = ReplayFill(order_id=order_id, side=side, quantity=quantity, price=price,
                           timestamp=minute.timestamp + timedelta(minutes=1),
+                          bar_timestamp=minute.timestamp,
                           fee=s.config.fee_per_side * quantity, reason=reason, ambiguous=ambiguous)
         apply_fill(s, item, instrument)
         result.fills.append(item)
@@ -100,5 +112,6 @@ def match_minute(state: EngineState, minute: MinuteSnapshot, instrument: Instrum
         protect(allow_profit=entries_at_open, use_open=entries_at_open)
     s.cursor = minute.timestamp + timedelta(minutes=1)
     s.instrument_id = minute.instrument_id
+    s.last_price_at = minute.timestamp
     mark_to_market(s, minute.close, instrument)
     return result

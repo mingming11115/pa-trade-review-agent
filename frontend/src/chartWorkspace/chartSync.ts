@@ -1,5 +1,6 @@
 import type { ChartOverlayContext } from '../chartOverlay';
 import type { LogicalRange, MouseEventParams, Time, UTCTimestamp } from 'lightweight-charts';
+import { barCloseAtMs } from '../tradingHours';
 import { PERIOD_MINUTES } from '../feed';
 import type { Bar, Period } from '../types';
 
@@ -111,7 +112,10 @@ export function createChartSync() {
       for (const target of entries.values()) {
         if (target === source) continue;
         const seconds = PERIOD_MINUTES[target.period] * 60;
-        const bucket = time === null ? null : Math.floor(time / seconds) * seconds;
+        const rth = target.times.length && target.byTime.get(target.times[0])?.trading_hours === 'RTH';
+        const bucket = time === null ? null : rth
+          ? target.times.find(open => open <= time && time * 1000 < barCloseAtMs(target.byTime.get(open)!, target.period)) ?? null
+          : Math.floor(time / seconds) * seconds;
         const bar = bucket === null ? undefined : target.byTime.get(bucket);
         if (bar && Number.isFinite(bar.close)) {
           target.context.chart.setCrosshairPosition(bar.close, bucket as UTCTimestamp, target.context.series);

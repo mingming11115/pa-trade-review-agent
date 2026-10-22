@@ -245,3 +245,45 @@ it('uses only the current replay prefix, advances indicators and restores them o
   expect(active('MA2').data).toHaveLength(5);
   expect(screen.getByLabelText('MA MA')).toHaveTextContent('6');
 });
+
+
+it('keeps indicator, replay and reset controls functional in a shared toolbar host', () => {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const view = render(<TradingChart bars={bars} chartKey="shared-toolbar" toolbarContainer={host} onStartTradingReplay={vi.fn()} />);
+  expect(within(host).getAllByRole('button').map(button => button.textContent)).toEqual(['指标', '回放', '重置']);
+  expect(view.container.querySelector('.chart-toolbar')).toBeNull();
+  fireEvent.click(within(host).getByRole('button', { name: '指标' }));
+  expect(screen.getByRole('dialog', { name: '指标库' })).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: '关闭指标库' }));
+  fireEvent.click(within(host).getByRole('button', { name: '回放' }));
+  expect(screen.getByRole('group', { name: 'K 线回放' })).toBeVisible();
+  chart.scale.fitContent.mockClear();
+  fireEvent.click(within(host).getByRole('button', { name: '重置' }));
+  expect(chart.scale.fitContent).toHaveBeenCalledOnce();
+  view.rerender(<TradingChart bars={bars} chartKey="shared-toolbar" toolbarContainer={host} showToolbar={false} />);
+  expect(within(host).queryAllByRole('button')).toHaveLength(0);
+  view.unmount();
+  host.remove();
+});
+
+
+it('keeps replay setup outside the chart pane and submits the selected start from the shared area', () => {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const start = vi.fn();
+  const view = render(<TradingChart bars={bars} period="1h" chartKey="shared-replay-panel"
+    replayPanelContainer={host} onStartTradingReplay={start}
+    replaySetup={<label>初始资金 USD<input aria-label="初始资金 USD" defaultValue="100000" /></label>} />);
+  fireEvent.click(screen.getByRole('button', { name: /^回放$/ }));
+  const panel = screen.getByRole('group', { name: 'K 线回放' });
+  expect(host).toContainElement(panel);
+  expect(view.container).not.toContainElement(panel);
+  fireEvent.click(within(host).getByRole('button', { name: '开始回放' }));
+  expect(start).toHaveBeenCalledWith('2026-01-01T05:00:00.000Z');
+  view.rerender(<TradingChart bars={bars} period="1h" chartKey="shared-replay-panel"
+    replayPanelContainer={host} showToolbar={false} onStartTradingReplay={start} />);
+  expect(host).toBeEmptyDOMElement();
+  view.unmount();
+  host.remove();
+});

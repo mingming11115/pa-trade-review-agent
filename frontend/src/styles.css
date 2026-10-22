@@ -259,7 +259,7 @@ button { border: 0; cursor: pointer; }
 
 .shell-grid {
   display: grid;
-  grid-template-columns: 230px minmax(0, 1.2fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
   gap: 16px;
   width: min(1680px, 100%);
   margin: 0 auto;
@@ -1217,7 +1217,6 @@ select:focus {
 }
 
 .chart-toolbar > div { display: flex; gap: 5px; min-width: 0; max-width: 100%; }
-.chart-zoom-controls { display: flex; flex-wrap: wrap; gap: 5px; }
 .chart-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2433,21 +2432,21 @@ table td { border-color: var(--line); font-size: 13px; font-variant-numeric: tab
 .risk-banner button { flex-shrink: 0; padding: 4px 8px; color: var(--danger); background: #fff1f2; border-radius: 5px; font-size: 12px; }
 .risk-banner p { flex: 1; min-width: 0; margin: 0; }
 @media (min-width: 1280px) {
-  .shell-grid { grid-template-columns: 230px minmax(0, var(--center-panel-fr, 56fr)) 6px minmax(0, var(--right-panel-fr, 44fr)); }
+  .shell-grid { grid-template-columns: minmax(0, var(--center-panel-fr, 56fr)) 6px minmax(0, var(--right-panel-fr, 44fr)); }
   .shell-grid.collapsed { grid-template-columns: 58px minmax(0, var(--center-panel-fr, 56fr)) 6px minmax(0, var(--right-panel-fr, 44fr)); }
   .panel-resizer { display: block; }
 }
 @media (min-width: 1024px) and (max-width: 1279px) {
-  .shell-grid { grid-template-columns: 190px minmax(0, 1.2fr) minmax(0, 1fr); }
+  .shell-grid { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
   .shell-grid.collapsed { grid-template-columns: 58px minmax(0, 1.2fr) minmax(0, 1fr); }
   .panel-resizer { display: none; }
   .panel-header, .panel-body { padding: 14px; }
 }
 @media (max-width: 1023px) {
-  .shell-grid, .shell-grid.collapsed { grid-template-columns: 190px minmax(0, 1fr); }
+  .shell-grid, .shell-grid.collapsed { grid-template-columns: minmax(0, 1fr); }
   .shell-grid.collapsed { grid-template-columns: 58px minmax(0, 1fr); }
   .panel-resizer { display: none; }
-  .right-panel { grid-column: 2; min-height: auto; }
+  .right-panel { grid-column: 1; min-height: auto; }
   .left-panel { grid-row: 1 / 3; }
   .top-nav-actions { grid-column: auto; }
 }
@@ -2504,7 +2503,7 @@ table td { border-color: var(--line); font-size: 13px; font-variant-numeric: tab
 .chart-replay-panel button:disabled { opacity: .5; cursor: default; }
 .chart-replay-panel [role="alert"] { color: #b42318; width: 100%; }
 .replay-workspace { min-width: 0; overflow: auto; background: #f4f6f8; color: #263b46; border: 1px solid #dce4e9; border-radius: 14px; padding: 24px clamp(16px, 2vw, 32px); }
-.shell-grid.replay-mode > .replay-workspace { grid-column: 2 / -1; }
+.shell-grid.replay-mode > .replay-workspace { grid-column: 1 / -1; }
 .replay-heading, .replay-session-heading { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 18px; }
 .replay-heading h2 { margin: 4px 0; font-size: 26px; }
 .replay-workspace button, .replay-workspace select, .replay-workspace input { border: 1px solid #cad5dc; border-radius: 6px; padding: 8px 12px; background: white; color: inherit; }
@@ -2554,7 +2553,7 @@ table td { border-color: var(--line); font-size: 13px; font-variant-numeric: tab
 .replay-saved-row > div:first-child {flex:1; min-width:180px;}
 
 /* Give the original chart room for its trading ticket while replay is active. */
-.shell-grid.chart-trading-mode > .center-panel { grid-column: 2 / -1; }
+.shell-grid.chart-trading-mode > .center-panel { grid-column: 1 / -1; }
 .shell-grid.chart-trading-mode > .right-panel,
 .shell-grid.chart-trading-mode > .panel-resizer { display: none; }
 .chart-replay-trading button { border: 1px solid #cad5dc; border-radius: 7px; padding: 8px 12px; background: white; color: #253a47; cursor: pointer; }
@@ -2584,7 +2583,7 @@ table td { border-color: var(--line); font-size: 13px; font-variant-numeric: tab
 .chart-order-ticket > [role=alert] { margin:0 12px 12px; color:#b8463d; font-size:12px; }
 
 /* Replay uses a continuous chart surface, including the start-bar selection. */
-.shell-grid:has(.chart-replay-panel) > .center-panel { grid-column: 2 / -1; }
+.shell-grid:has(.chart-replay-panel) > .center-panel { grid-column: 1 / -1; }
 .shell-grid:has(.chart-replay-panel) > .right-panel,
 .shell-grid:has(.chart-replay-panel) > .panel-resizer { display: none; }
 .shell-grid:is(.chart-trading-mode, :has(.chart-replay-panel)) > .center-panel {
@@ -2619,3 +2618,65 @@ table td { border-color: var(--line); font-size: 13px; font-variant-numeric: tab
   .shell-grid:is(.chart-trading-mode, :has(.chart-replay-panel)) .center-panel > .panel-header { padding: 5px 8px; }
   .chart-replay-trading .chart-replay-panel { gap: 6px; padding: 7px 8px; }
 }
+
+/* Task navigation floats above the workspace and never reserves a grid column. */
+.task-nav-trigger, .analysis-panel-trigger {
+  position: fixed;
+  left: max(16px, env(safe-area-inset-left));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 14px;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: 0 4px 16px rgb(15 23 42 / 14%);
+}
+.floating-task-panel {
+  position: fixed;
+  left: max(16px, env(safe-area-inset-left));
+  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 52px);
+  z-index: 45;
+  width: min(300px, calc(100vw - 32px));
+  min-height: 0;
+  max-height: calc(100dvh - 100px - env(safe-area-inset-bottom));
+  overflow: auto;
+  background: #fff;
+  box-shadow: 0 8px 32px rgb(15 23 42 / 18%);
+}
+.floating-task-panel[hidden] { display: none; }
+.floating-task-panel .sidebar-scroll { max-height: none; }
+@media print { .task-nav-trigger, .floating-task-panel { display: none; } }
+
+/* Analysis results slide over the chart without reserving workspace width. */
+.shell-grid.analysis-drawer-workspace { grid-template-columns: minmax(0, 1fr); }
+.analysis-panel-trigger { left: auto; right: max(16px, env(safe-area-inset-right)); }
+.shell-grid.analysis-drawer-workspace > .floating-analysis-panel {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top));
+  right: max(16px, env(safe-area-inset-right));
+  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 52px);
+  z-index: 46;
+  display: flex;
+  flex-direction: column;
+  width: min(max(360px, var(--analysis-drawer-width, 44vw)), calc(100vw - 32px));
+  min-height: 0;
+  overflow: visible;
+  background: #fff;
+  box-shadow: 0 8px 32px rgb(15 23 42 / 18%);
+  animation: analysis-drawer-enter 180ms ease-out;
+}
+.shell-grid.analysis-drawer-workspace > .floating-analysis-panel[hidden] { display: none; }
+.floating-analysis-panel > .panel-header { flex-shrink: 0; border-radius: 10px 10px 0 0; background: #fff; }
+.floating-analysis-panel > .right-body { align-content: start; flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; border-radius: 0 0 10px 10px; }
+.floating-analysis-panel > .panel-resizer { display: block; position: absolute; left: -7px; top: 10px; bottom: 10px; width: 12px; z-index: 1; }
+.floating-analysis-panel .panel-chips { display: flex; align-items: center; gap: 10px; }
+.analysis-panel-close { min-width: 32px; min-height: 32px; font-size: 24px; }
+@keyframes analysis-drawer-enter { from { transform: translateX(32px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@media (max-width: 720px) { .floating-analysis-panel > .panel-resizer { display: none; } }
+@media (prefers-reduced-motion: reduce) { .shell-grid.analysis-drawer-workspace > .floating-analysis-panel { animation: none; } }
+@media print { .analysis-panel-trigger, .shell-grid.analysis-drawer-workspace > .floating-analysis-panel { display: none; } }

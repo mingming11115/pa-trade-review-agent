@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createReplaySession, getRecentTrades, listReplaySessions } from '../api';
-import type { ReplayMode, ReplaySession, Trade } from '../types';
+import type { ReplayMode, ReplaySession, Trade, TradingHours } from '../types';
 import { TrainingWorkspace } from './TrainingWorkspace';
 import { HistoricalWorkspace } from './HistoricalWorkspace';
 import { errorText } from './useReplaySession';
@@ -11,6 +11,7 @@ export function ReplayWorkspace({mode,initialTradeIds=[],onClose,closeLabel='返
   const [trades,setTrades]=useState<Trade[]>([]);
   const [selected,setSelected]=useState(initialTradeIds);
   const [symbol,setSymbol]=useState('ES');
+  const [tradingHours,setTradingHours]=useState<TradingHours>('ETH');
   const [time,setTime]=useState('');
   const [end,setEnd]=useState('');
   const [random,setRandom]=useState(false);
@@ -34,7 +35,7 @@ export function ReplayWorkspace({mode,initialTradeIds=[],onClose,closeLabel='返
     setBusy(true);setError('');
     try {
       const s=await createReplaySession({mode,symbol,start:time?new Date(`${time}+08:00`).toISOString():undefined,end:end?new Date(`${end}+08:00`).toISOString():undefined,
-        random_start:mode==='training'&&random,trade_ids:mode==='historical'?selected:[],config:{initial_cash:cash,fee_per_side:fee,slippage_ticks:slippage}});
+        random_start:mode==='training'&&random,trade_ids:mode==='historical'?selected:[],config:{trading_hours:tradingHours,initial_cash:cash,fee_per_side:fee,slippage_ticks:slippage}});
       setSessionId(s.id);
     } catch(e){setError(errorText(e));}finally{setBusy(false);}
   }
@@ -43,6 +44,7 @@ export function ReplayWorkspace({mode,initialTradeIds=[],onClose,closeLabel='返
       {error&&<p role="alert">{error}</p>}
       <div className="replay-setup-grid"><form className="replay-create" onSubmit={e=>{e.preventDefault();void create();}}><h3>{mode==='training'?'开始一次训练':'选择交易回放'}</h3><fieldset disabled={busy}>
         <label>品种<select aria-label="回放品种" value={symbol} onChange={e=>{setSymbol(e.target.value);setSelected([]);}}>{['ES','NQ','MES','MNQ','MGC'].map(s=><option key={s}>{s}</option>)}</select></label>
+        <label>交易时段<select aria-label="新回放交易时段" value={tradingHours} onChange={e=>setTradingHours(e.target.value as TradingHours)}><option value="ETH">ETH 全时段</option><option value="RTH">RTH 常规时段</option></select></label>
         <label>开始时间（北京时间）<input aria-label="开始时间（北京时间）" type="datetime-local" required={mode==='training'&&!random} disabled={random} value={time} onChange={e=>setTime(e.target.value)}/></label>
         {mode==='training'?<><label><input type="checkbox" checked={random} onChange={e=>setRandom(e.target.checked)}/>随机起点（2023 年至今）</label>
           <label>初始资金 USD<input aria-label="初始资金" required type="number" min="0.01" step="0.01" value={cash} onChange={e=>setCash(e.target.value)}/></label>

@@ -11,6 +11,7 @@ from app.analysis.tasks.models import AnalysisRun, AnalysisTask
 from app.core.errors import AppError
 from app.core.logging_context import get_trace_id
 from app.core.models import Bar, HistoricalQuery
+from app.replay.contracts import TrainingConfig
 from app.replay.models import ReplayAnalysisInput, ReplayAnalysisLink, ReplaySavedVersion
 from app.replay.saved import SavedReplays
 from app.replay.service import ReplayService
@@ -33,6 +34,7 @@ class ReplayAnalysis:
         version = await SavedReplays(self.service.repository).get(scope, version_id)
         s = version['session']
         cursor = datetime.fromisoformat(s['state']['cursor'])
+        trading_hours = TrainingConfig.model_validate(s['state'].get('config', {})).trading_hours
         periods = sorted(set(periods))
         prepared = {}
         for period in periods:
@@ -41,7 +43,7 @@ class ReplayAnalysis:
                 if prior:
                     prepared[period] = prior.payload
                     continue
-            data = await self.service.bars(scope, s['id'], period, cursor, 500)
+            data = await self.service.bars(scope, s['id'], period, cursor, 500, trading_hours=trading_hours)
             bars = [Bar.model_validate(b) for b in data['bars']]
             if not bars:
                 raise AppError('analysis_bars_insufficient', '保存区间暂无可分析行情，请稍后重试', 422)
@@ -49,7 +51,7 @@ class ReplayAnalysis:
                            fills=[f for e in version['events'] for f in e.get('fills',[])],
                            position=s['state']['position'], orders=s['state']['orders'], account=s['state']['account'],
                            config=s['state']['config'])
-            query = HistoricalQuery(symbol=s['symbol'], period=period, start=min(b.timestamp for b in bars),
+            query = HistoricalQuery(symbol=s['symbol'], period=period, trading_hours=trading_hours, start=min(b.timestamp for b in bars),
                                     end=cursor, analysis_mode='historical', replay_context=context)
             prepared[period] = dict(query=query.model_dump(mode='json', by_alias=True),
                                     bars=[b.model_dump(mode='json') for b in bars], bars_hash=bars_hash(bars))
@@ -69,7 +71,7 @@ class ReplayAnalysis:
                         return link.result
             task = AnalysisTask(user_id=owner_id, kind='replay_review', title=f"回放分析 · {version['name']}",
                                 description='已保存模拟回放的冻结输入', status='running',
-                                config_json=dict(saved_version_id=version_id, periods=periods, symbol=s['symbol'], period=periods[0], analysis_mode='historical'))
+                                config_json=dict(saved_version_id=version_id, periods=periods, symbol=s['symbol'], period=periods[0], trading_hours=trading_hours, analysis_mode='historical'))
             db.add(task)
             await db.flush()
             runs = []

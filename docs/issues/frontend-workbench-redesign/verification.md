@@ -45,3 +45,24 @@
 移除顶部独立新建按钮，在“K线分析”标题旁复用复盘的 sidebar-add 按钮样式；保留唯一入口、可访问名称、禁用条件和原回调。移除旧按钮和两列分析标题专用 CSS。
 
 局部 App/SidebarNav 测试 24 passed；前端全量 70 passed；make build 成功。make test 首次因沙箱限制数据库连接出现 17 个初始化错误，经授权在沙箱外重跑成功（完整日志 /tmp/pa-nav-tests-retry.log）。git diff --check 通过。本轮未进行浏览器视觉验收。
+# 2026-10-20 悬浮任务导航补充验收
+
+- 任务导航默认收起为左下角悬浮按钮，点击展开，不占据网格列；点击外部、入口、收起按钮或 Esc 可收起。Esc 和收起按钮返回入口焦点；悬停不展开。回放中展开导航不触发退出确认。
+- `cd frontend && npm test -- --run src/App.test.tsx src/SidebarNav.test.tsx`：45 项通过。证据 `/tmp/pa-floating-nav-final-local.log`。新增导航测试及回放入口测试均观察到先失败后通过。
+- `make frontend-test`：400 项通过、1 项失败。失败为 `src/chartWorkspace/ChartDrawingTools.test.tsx` 的 `does not report a successful async import while loading would discard it`，第 90 行查找 `importFile` 得到 null，无法触发 change。单独运行该文件同样 8 项通过、1 项失败，当前上游 HTML 无该输入。该文件与画线实现原有未提交修改均保留，本次未处理。证据 `/tmp/pa-floating-nav-suite.log`、`/tmp/pa-floating-nav-drawing-check.log`。
+- `make test`：沙箱初次阻止 PostgreSQL 连接；沙箱外重跑后后端 437 项通过，前端仍为上述 400 项通过、1 项失败。证据 `/tmp/pa-floating-nav-all-tests-unrestricted.log`。
+- `make build`：通过；保留原有大包体积警告。证据 `/tmp/pa-floating-nav-final-build.log`。
+- 浏览器实际检查 1440px、1024px、390px：页面宽度分别为 1440、1024、390px，无横向溢出；导航展开前后图表宽度分别保持约 760.48、524.73、366px。390px 下浮层宽 300px；Esc 收起后焦点为「展开任务导航」，桌面外部点击也能收起。视口检查后恢复默认大小。
+- 页面后端未连接，行情请求失败，视觉检查仅证明导航和空行情工作台布局，不宣称真实行情或任务执行验收通过。截图 `/tmp/pa-floating-task-navigation.png`。
+
+
+
+## 2026-10-21 Right analysis drawer
+
+- Approved scope: default closed; bottom-right entry; overlay from right without reserving chart space; outside click, Escape, close button; preserve tabs and results; retain width controls; viewport bounds and reduced motion.
+- TDD: new drawer test first failed for missing entry. App.test.tsx then passed 41/41. Independent review found the old split denominator differed from the new vw sizing. A 2560px regression first failed, then passed after resizePanels used window.innerWidth. Final local run: 41/41. Log: /private/tmp/pa-analysis-drawer-local.log; failing resize evidence: /private/tmp/pa-analysis-drawer-resize-red.log.
+- make test: sandbox initially blocked PostgreSQL sockets. Unrestricted rerun: backend 437 passed, 58 warnings; frontend 401 passed, 1 failed. Log: /private/tmp/pa-analysis-drawer-all.log.
+- make frontend-test: 401 passed, 1 failed. Existing failure: ChartDrawingTools.test.tsx / does not report a successful async import while loading would discard it. Line 90 queries missing importFile, so change event has no element. Standalone reproduction: 8 passed, 1 failed. Current upstream HTML has no importFile. Same failure was documented in the prior navigation acceptance; no drawing code modified in this task. Logs: /private/tmp/pa-analysis-drawer-frontend.log and /private/tmp/pa-analysis-drawer-drawing.log.
+- make build passed after final resize fix; existing large chunk warning remains. Log: /private/tmp/pa-analysis-drawer-build.log.
+- Browser checked default hidden, entry opens, Escape closes and returns focus, reopening preserves selected bars tab. Overlay screenshot: /private/tmp/pa-analysis-drawer.png. Actual screenshot viewport is 889px; full 1440/1024/390px matrix was not repeated. CSS bounds drawer width to viewport minus 32px and supports internal scrolling.
+- Browser displayed existing historical candles and later a market refresh error. No model run was started; this verification covers drawer interaction, not provider/model health. Close changes local display state only; content stays mounted. No API, dependency, or backend changes.

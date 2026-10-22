@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from app.core.models import TradingHours
 
 Money = Annotated[Decimal, Field(allow_inf_nan=False, max_digits=24, decimal_places=9)]
 ComputedMoney = Annotated[Decimal, Field(allow_inf_nan=False)]
@@ -16,6 +17,7 @@ class Contract(BaseModel):
 
 
 class TrainingConfig(Contract):
+    trading_hours: TradingHours = 'ETH'
     initial_cash: Money = Field(default=Decimal('100000'), gt=0)
     fee_per_side: Money = Field(default=Decimal('0'), ge=0)
     slippage_ticks: int = Field(default=0, strict=True, ge=0, le=10000)
@@ -60,6 +62,7 @@ class ReplayOrder(Contract):
 class ReplayFill(Contract):
     order_id: str
     timestamp: AwareDatetime
+    bar_timestamp: AwareDatetime | None = None
     side: Literal['buy', 'sell']
     quantity: Quantity
     price: Money
@@ -98,6 +101,7 @@ class EngineState(Contract):
     account: AccountState = Field(default_factory=AccountState)
     orders: list[ReplayOrder] = Field(default_factory=list)
     last_price: Money | None = None
+    last_price_at: AwareDatetime | None = None
     instrument_id: int = 0
 
 
@@ -117,7 +121,7 @@ class SessionCreate(Contract):
 
 
 class ReplayCommand(Contract):
-    type: Literal['advance', 'place_order', 'amend_order', 'cancel_order', 'update_protection', 'finish', 'abandon', 'seek']
+    type: Literal['advance', 'place_order', 'amend_order', 'cancel_order', 'update_protection', 'finish', 'abandon', 'seek', 'set_trading_hours']
     operation_id: str = Field(min_length=1, max_length=120)
     expected_revision: int = Field(ge=0)
     period: Literal['1m', '5m', '15m', '30m', '1h', '4h', '1d'] = '1m'
@@ -132,9 +136,12 @@ class ReplayCommand(Contract):
     reduce_only: bool = False
     cursor: AwareDatetime | None = None
     target: Literal['previous', 'next'] | None = None
+    trading_hours: TradingHours | None = None
 
     @model_validator(mode='after')
     def validate_fields(self) -> ReplayCommand:
+        if self.type == 'set_trading_hours' and self.trading_hours is None:
+            raise ValueError('请选择交易时段')
         if self.type in {'cancel_order', 'amend_order'} and not self.order_id:
             raise ValueError('必须指定订单')
         if self.type in {'place_order', 'amend_order'} and self.kind in {'limit', 'stop_limit'} and self.limit_price is None:

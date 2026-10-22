@@ -1,7 +1,9 @@
 export type Direction = "bullish" | "bearish" | "neutral";
+export type TradingHours = "ETH" | "RTH";
 export type Period = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
 
 export interface HistoricalQuery {
+  trading_hours?: TradingHours;
   symbol: string;
   period: Period;
   start: string;
@@ -21,6 +23,7 @@ export interface HistoricalQuery {
 }
 
 export interface Bar {
+  trading_hours?: TradingHours;
   timestamp: string;
   is_partial?: boolean;
   timeframe?: string | null;
@@ -34,6 +37,7 @@ export interface Bar {
 }
 
 export interface BarRef {
+  trading_hours?: TradingHours;
   bar_timestamp: string;
   timeframe: string;
   session: "CME" | "US_EQUITY_RTH";
@@ -51,6 +55,7 @@ export interface MarketCoverage {
 }
 
 export interface MarketRange {
+  trading_hours?: TradingHours;
   symbol: string;
   period: string;
   bars: Bar[];
@@ -59,6 +64,7 @@ export interface MarketRange {
 
 /** Chart market feed — independent of LLM analysis lifecycle. */
 export interface FeedState {
+  trading_hours?: TradingHours;
   kind: "history" | "live";
   symbol: string;
   period: Period | "";
@@ -162,26 +168,28 @@ export interface ReplayOrder {
   status: 'pending'|'filled'|'cancelled'; reason: string;
 }
 export interface ReplayFill {
-  order_id: string; timestamp: string; side: 'buy'|'sell'; quantity: number; price: string; fee: string;
+  order_id: string; timestamp: string; bar_timestamp?:string|null; side: 'buy'|'sell'; quantity: number; price: string; fee: string;
   reason: string; ambiguous: boolean; realized_pnl: string;
 }
 export interface ReplaySession {
+  can_market_trade?: boolean;
   id: string; mode: ReplayMode; symbol: string; status: 'active'|'completed'|'abandoned'; revision: number; created_at: string;
   config: {instrument:{symbol:string; tick_size:string; multiplier:string}; rules_version:number; start:string; end:string|null};
-  state: {cursor:string; last_price:string|null; instrument_id:number; config:{initial_cash:string;fee_per_side:string;slippage_ticks:number;profit_target?:string|null;loss_limit?:string|null};
+  state: {cursor:string; last_price:string|null; last_price_at?:string|null; instrument_id:number; config:{trading_hours?:TradingHours;initial_cash:string;fee_per_side:string;slippage_ticks:number;profit_target?:string|null;loss_limit?:string|null};
     position:{quantity:number;average_price:string;entry_fees:string;stop_loss:string|null;take_profit:string|null};
     account:{cash:string;realized_pnl:string;fees:string;unrealized_pnl:string;equity:string;peak_equity:string;max_drawdown:string;closed_trades:number;wins:number;profit_target_reached?:boolean;loss_limit_reached?:boolean};
     orders:ReplayOrder[]};
 }
 export interface ReplayCommandInput {
-  type:'advance'|'place_order'|'amend_order'|'cancel_order'|'update_protection'|'finish'|'abandon'|'seek';
+  type:'advance'|'place_order'|'amend_order'|'cancel_order'|'update_protection'|'finish'|'abandon'|'seek'|'set_trading_hours';
+  trading_hours?:TradingHours;
   period?:Period;
   order_id?:string;side?:'buy'|'sell';kind?:'market'|'limit'|'stop_market'|'stop_limit';quantity?:number;limit_price?:string|null;
   stop_price?:string|null; stop_loss?:string|null;take_profit?:string|null;reduce_only?:boolean;cursor?:string;target?:'previous'|'next';
 }
 export interface ReplayCreate {
   mode:ReplayMode;symbol:string;start?:string;end?:string;random_start?:boolean;trade_ids?:string[];
-  config?:{initial_cash:string;fee_per_side:string;slippage_ticks:number;profit_target?:string|null;loss_limit?:string|null};
+  config?:{trading_hours?:TradingHours;initial_cash:string;fee_per_side:string;slippage_ticks:number;profit_target?:string|null;loss_limit?:string|null};
 }
 export interface HistoricalReplayEvent {
   id:string;type:'entry'|'exit';timestamp:string;price:string;direction:'long'|'short';size:string;

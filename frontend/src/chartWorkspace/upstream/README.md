@@ -10,12 +10,12 @@ The following are byte-for-byte copies from that commit:
 - `demo.css`, `icons.ts`, `tool-groups.ts`, `index.html` from `demo/`
 - `LICENSE` from the repository root
 
-`mountUpstreamDrawingUI.ts` is the demo controller adapted to an existing PA DrawingManager. It retains all 86 tool entries, SVG icons, grouped flyouts, emoji picker, magnet, keep-drawing, visibility, remove-all, selection bar, inline text/table editor, image input, and JSON import/export.
+`mountUpstreamDrawingUI.ts` is the demo controller adapted to an existing PA DrawingManager. It retains all 86 tool entries, SVG icons, grouped flyouts, emoji picker, magnet, keep-drawing, visibility, remove-all, selection bar, inline text/table editor, and image input. The demo's entire top header row, including Export/Import, Tools, npm, and GitHub links, is omitted from the chart toolbar.
 
 Host adaptations only:
 
 1. Import the installed npm package instead of `../src`; remove the SPY CSV fetch, chart creation and demo window/debug globals. PA supplies chart, series, bars and manager.
-2. Resolve IDs within a ShadowRoot so multiple chart instances do not collide. Load the unchanged original CSS and HTML there. Replace the CSS `:root` selector with `:host`; supply the original body font/background at host boundaries. Hide the demo branding and hard-coded SPY/1D sample because PA already displays the actual symbol and interval. Original action buttons remain.
+2. Resolve IDs within a ShadowRoot so multiple chart instances do not collide. Load the upstream CSS and adapted HTML there. Replace the CSS `:root` selector with `:host`; supply the original body font/background at host boundaries. Omit the demo header row because PA already displays chart context and persists drawings locally.
 3. Track DOM/manager subscriptions and delayed callbacks for unmount cleanup. Guard pending file reads after unmount.
 4. Notify PA when the original editor opens/closes so trading stays locked. Namespace Image asset names by PA scope and persist bytes before adding them; restore through public `setImageReader`.
 

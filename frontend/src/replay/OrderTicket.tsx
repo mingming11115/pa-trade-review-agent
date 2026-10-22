@@ -1,3 +1,4 @@
+import { canMarketTrade } from '../tradingHours';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReplayCommandInput, ReplayOrder, ReplaySession } from '../types';
@@ -32,8 +33,9 @@ export function OrderTicket({session,disabled,command,editing,onDone,prefill,pla
     document.addEventListener('keydown',escape);
     return()=>{document.removeEventListener('pointerdown',dismiss);document.removeEventListener('keydown',escape);};
   },[placement]);
+  const marketBlocked=kind==="market"&&!canMarketTrade(session);
   const tick=session.config.instrument.tick_size;
-  const ticket=<form className="replay-ticket" onKeyDown={e=>{if(e.key==='Enter'&&e.target instanceof HTMLInputElement){e.preventDefault();if(!disabled)e.currentTarget.requestSubmit();}}} onSubmit={async e=>{e.preventDefault();if(disabled)return;const submitter=(e.nativeEvent as SubmitEvent).submitter;const direction=submitter?.getAttribute('data-side');const orderSide=direction==='buy'||direction==='sell'?direction:side;if(await command({type:editing?'amend_order':'place_order',order_id:editing?.id,side:orderSide,kind,quantity,limit_price:kind==='limit'||kind==='stop_limit'?limit:null,stop_price:kind.startsWith('stop_')?trigger:null,stop_loss:stop||null,take_profit:profit||null,reduce_only:reduce}))onDone?.();}}>
+  const ticket=<form className="replay-ticket" onKeyDown={e=>{if(e.key==='Enter'&&e.target instanceof HTMLInputElement){e.preventDefault();if(!disabled)e.currentTarget.requestSubmit();}}} onSubmit={async e=>{e.preventDefault();if(disabled||marketBlocked)return;const submitter=(e.nativeEvent as SubmitEvent).submitter;const direction=submitter?.getAttribute('data-side');const orderSide=direction==='buy'||direction==='sell'?direction:side;if(await command({type:editing?'amend_order':'place_order',order_id:editing?.id,side:orderSide,kind,quantity,limit_price:kind==='limit'||kind==='stop_limit'?limit:null,stop_price:kind.startsWith('stop_')?trigger:null,stop_loss:stop||null,take_profit:profit||null,reduce_only:reduce}))onDone?.();}}>
     <h3>{editing?'修改挂单':'下单'}</h3>
     <fieldset disabled={disabled}>
       <label>方向<select aria-label="下单方向" value={side} onChange={e=>setSide(e.target.value as 'buy'|'sell')}><option value="buy">买入 / 做多</option><option value="sell">卖出 / 做空</option></select></label>
@@ -43,9 +45,10 @@ export function OrderTicket({session,disabled,command,editing,onDone,prefill,pla
       {(kind==='limit'||kind==='stop_limit')&&<label>限价<input aria-label="限价" type="number" step={tick} required value={limit} onChange={e=>setLimit(e.target.value)}/></label>}
       <label><input type="checkbox" checked={reduce} onChange={e=>setReduce(e.target.checked)}/>只减仓</label>
       {!reduce&&!session.state.position.quantity&&<><label>止损<input aria-label="开仓止损" type="number" step={tick} value={stop} onChange={e=>setStop(e.target.value)}/></label><label>止盈<input aria-label="开仓止盈" type="number" step={tick} value={profit} onChange={e=>setProfit(e.target.value)}/></label></>}
-      <button className="primary-action" type="submit" data-side="buy" onClick={()=>setSide('buy')}>{editing?'买入改单':'买入'}</button><button className="replay-sell" type="submit" data-side="sell" onClick={()=>setSide('sell')}>{editing?'卖出改单':'卖出'}</button>
+      <button className="primary-action" type="submit" disabled={marketBlocked} data-side="buy" onClick={()=>setSide('buy')}>{editing?'买入改单':'买入'}</button><button className="replay-sell" type="submit" disabled={marketBlocked} data-side="sell" onClick={()=>setSide('sell')}>{editing?'卖出改单':'卖出'}</button>
       {editing&&<button type="button" onClick={onDone}>取消修改</button>}
     </fieldset>
+    {marketBlocked&&<p role="status">请推进至 RTH 后交易</p>}
     <small>{kind==='market'?'按当前回放价立即成交':'从下一分钟开始按条件撮合'} · tick {tick} · 乘数 {session.config.instrument.multiplier}</small>
   </form>;
   if(!placement)return ticket;

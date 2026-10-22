@@ -448,3 +448,27 @@
 - 原页面验证：打开回放只显示选择起点、时间摘要及资金设置；菜单向上展开，三种起点同列。选择日期后日期和时区出现且日期聚焦；切选 K 线后日期隐藏，蓝线区域可选，点击后起点摘要更新为图表时间 2026-10-05 13:45。
 - 随机菜单项实测成功启动本地 ES 5m 回放，停在北京时间 2024-02-10 00:51；无交易测试场次不保存退出。页面最终保留统一菜单展开供查看。
 - 本次未修改后端/API/数据库；现有数据和撮合规则保持。
+
+
+## 2026-10-18 ETH / RTH 恢复
+
+- 依据归档快照 `38a1672b4f90f9c4143dba7b66292bceae1f7111` 恢复原时段规格；保留当前本地归档缺口证明、多周期图表和完整画线工具栏。未新增依赖。
+- 图表、分析、回放契约与保存版本传递 `trading_hours`，旧数据缺省 ETH。RTH 使用纽约当地工作日时段，先过滤分钟再按开盘对齐聚合，回放跳过夜盘且不撮合。市价交易校验实际报价来源分钟。
+- 回归覆盖 DST、开收盘边界、分钟过滤与聚合、夜盘报价、跨周末推进、未证明缺口、RTH 随机起点及保存继续。实际 PostgreSQL 随机起点用例捕获时间参数类型问题，已修正为 datetime.time。
+- 评审发现的跨时段旧行情残留已修复：通用刷新先隔离旧时段批次；新增外部切换后刷新失败回归测试。RTH 空窗口同样先执行本地覆盖证明。
+- 最终 `make test`：后端 **437 passed**（58 warnings），前端 **46 文件 / 384 passed**。日志 `/private/tmp/pa-rth-all-tests-final.log`。
+- 最终 `make build` 成功，保留现有大于 500 kB chunk 提示。日志 `/private/tmp/pa-rth-build-final.log`。
+- 浏览器实际切换顶部「K 线交易时段」至 RTH，1m / 5m / 15m / 1h 四图均加载，完整画线工具栏及既有画线保留；打开回放起点设置后取消。未在真实页面下单或创建保存场次，保存继续通过自动测试验证。
+- 页面截图：`/Users/l/.codex/visualizations/2026/10/17/01a148a1-94ba-7a11-991e-6a3196405717/pa-rth-restored.jpg`。
+- 限制：按工作日窗口与实际行情取交集，未额外接入节假日及提前收盘日历。
+
+### 2026-10-18 ETH 跨周末历史加载修复
+
+- 用户反馈：ES 15m 选择 ETH 后无法加载 10 月 4 日 17:00（图表 UTC-5）之前的行情；用户回复「继续」确认修复。
+- 根因：120 根对应的 30 小时自然窗口完全落入周末，本地返回空数据，上游补数返回 403。只读数据库核实 10 月 1、2 日分钟数据仍在归档。
+- 普通图表历史加载至少回查 4 天，空窗口继续向左查找，沿用周期回溯上限；每次查询不超过 ETH 接口的 2000 根跨度。只跳过纽约时间的 CME 常规周末及每日休市，不推断节假日或未知缺口。切换选择时停止搜索并丢弃旧响应，异常不循环重试。
+- 回归先观察原单窗口实现无法加载周五行情，再验证新逻辑；评审发现首次扩大窗口超过 1m 接口上限，补充 1m/5m 失败测试后改为分段请求，复审无阻断。
+- 最新相关测试：`cd frontend && npm test -- --run src/feed.test.ts src/App.test.tsx src/TradingChart.test.tsx src/chartWorkspace/ChartWorkspace.test.tsx`，4 文件 / **80 passed**。日志 `/private/tmp/pa-eth-history-relevant-final.log`。
+- 最新 `make test`：后端 **437 passed**；前端 **384 passed / 8 failed**。失败集中于 `ChartDrawingTools.test.tsx` 的全部 8 项，堆栈为 `upstream/mountUpstreamDrawingUI.ts` 空节点 `textContent`；期间该 upstream 目录出现本次范围外修改，未覆盖。不能据此宣称最终全量通过。日志 `/private/tmp/pa-eth-history-all-tests-final.log`。
+- 最新 `make build` 成功（已有 chunk 大小警告），日志 `/private/tmp/pa-eth-history-build-final.log`；`git diff --check` 无输出。
+- 本地页面重启前后端后恢复 ETH 行情；运行日志证实跨周末请求返回 292 根 15m K 线。浏览器完整手动回看因共享页面状态变化未完成，周五数据追加由 App 集成测试验证。上游 403 未在本次修复中处理。

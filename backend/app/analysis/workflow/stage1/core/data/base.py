@@ -5,6 +5,7 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Sequence
+from app.core.models import TradingHours
 
 
 # ── KlineBar ──────────────────────────────────────────────────────────────────
@@ -22,6 +23,7 @@ class KlineBar:
     amount: float = 0.0   # turnover amount (成交额); 0 when unavailable
     pct_chg: float | None = None  # daily change % from API when available
     closed: bool = True   # False for the currently-forming bar
+    trading_hours: TradingHours = "ETH"
 
 
 def normalize_kline_bar(bar: KlineBar) -> KlineBar:
@@ -50,6 +52,7 @@ def normalize_kline_bar(bar: KlineBar) -> KlineBar:
         amount=getattr(bar, "amount", 0.0),
         pct_chg=getattr(bar, "pct_chg", None),
         closed=bar.closed,
+        trading_hours=bar.trading_hours,
     )
 
 
@@ -77,6 +80,7 @@ class KlineFrame:
     bars: tuple[KlineBar, ...]
     indicators: IndicatorBundle
     snapshot_ts_local_ms: int   # milliseconds since epoch, local time
+    trading_hours: TradingHours = "ETH"
 
 
 # ── DataSource ABC ────────────────────────────────────────────────────────────

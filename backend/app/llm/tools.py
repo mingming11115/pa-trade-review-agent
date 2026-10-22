@@ -23,7 +23,8 @@ from pydantic import BaseModel, Field
 from app.core.config import get_settings
 from app.core.errors import AppError
 from app.core.user_context import get_current_user_id
-from app.core.models import HistoricalQuery, Period
+from app.core.models import HistoricalQuery, Period, TradingHours
+from app.market.trading_hours import RTH_MAX_RANGE_DAYS
 from app.market.provider import MassiveHistoricalProvider
 from app.market.service import (
     LocalFirstMarketProvider,
@@ -122,6 +123,7 @@ class _MarketGetBarsInput(BaseModel):
     start: datetime
     end: datetime
     include_partial: bool = False
+    trading_hours: TradingHours = "ETH"
 
 
 class MarketGetBarsTool(LLMTool):
@@ -134,6 +136,7 @@ class MarketGetBarsTool(LLMTool):
         "type": "object",
         "properties": {
             "symbol": {"type": "string", "description": "Market symbol such as ES or NQ."},
+            "trading_hours": {"type": "string", "enum": ["ETH", "RTH"], "default": "ETH", "description": "Use the analysis snapshot trading_hours when inspecting its market data."},
             "period": {
                 "type": "string",
                 "enum": ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
@@ -165,6 +168,7 @@ class MarketGetBarsTool(LLMTool):
         query = HistoricalQuery(
             symbol=resolved_symbol,
             period=parsed.period,
+            trading_hours=parsed.trading_hours,
             start=parsed.start,
             end=parsed.end,
         )
@@ -176,11 +180,13 @@ class MarketGetBarsTool(LLMTool):
             parsed.start,
             parsed.end,
             include_partial=parsed.include_partial,
+            trading_hours=parsed.trading_hours,
         )
         return {
             "tool": self.name,
             "symbol": parsed.symbol.upper(),
             "resolved_symbol": market.symbol,
+            "trading_hours": parsed.trading_hours,
             "period": market.period,
             "start": parsed.start.isoformat(),
             "end": parsed.end.isoformat(),
@@ -197,6 +203,7 @@ class _MarketGetLatestBarsInput(BaseModel):
     symbol: str = Field(min_length=1, max_length=100)
     period: Period = Period.minute_5
     count: int = Field(default=20, ge=1, le=500)
+    trading_hours: TradingHours = "ETH"
 
 
 class MarketGetLatestBarsTool(LLMTool):
@@ -210,6 +217,7 @@ class MarketGetLatestBarsTool(LLMTool):
         "type": "object",
         "properties": {
             "symbol": {"type": "string", "description": "Market symbol such as ES or NQ."},
+            "trading_hours": {"type": "string", "enum": ["ETH", "RTH"], "default": "ETH", "description": "Use the analysis snapshot trading_hours when inspecting its market data."},
             "period": {
                 "type": "string",
                 "enum": ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
@@ -234,13 +242,17 @@ class MarketGetLatestBarsTool(LLMTool):
         period = parsed.period
         period_minutes = PERIOD_MINUTES[period.value]
         now = datetime.now(UTC)
-        end = closed_boundary(now, period.value)
-        start = end - timedelta(minutes=period_minutes * parsed.count)
+        end = closed_boundary(now, "1m" if parsed.trading_hours == "RTH" else period.value)
+        span = timedelta(minutes=period_minutes * parsed.count)
+        if parsed.trading_hours == "RTH":
+            span = min(max(span * 5, timedelta(days=4)), timedelta(days=RTH_MAX_RANGE_DAYS[period.value]))
+        start = end - span
 
         provider = _provider()
         query = HistoricalQuery(
             symbol=resolved_symbol,
             period=period,
+            trading_hours=parsed.trading_hours,
             start=start,
             end=end,
         )
@@ -251,12 +263,14 @@ class MarketGetLatestBarsTool(LLMTool):
             start,
             end,
             now=now,
+            trading_hours=parsed.trading_hours,
         )
         bars = market.bars[-parsed.count:] if len(market.bars) > parsed.count else market.bars
         return {
             "tool": self.name,
             "symbol": parsed.symbol.upper(),
             "resolved_symbol": market.symbol,
+            "trading_hours": parsed.trading_hours,
             "period": period.value,
             "count": len(bars),
             "bars": [bar.model_dump(mode="json") for bar in bars],
@@ -273,6 +287,7 @@ class _MarketGetBarCountInput(BaseModel):
     start: datetime
     end: datetime
     include_partial: bool = False
+    trading_hours: TradingHours = "ETH"
 
 
 class MarketGetBarCountTool(LLMTool):
@@ -287,6 +302,7 @@ class MarketGetBarCountTool(LLMTool):
         "type": "object",
         "properties": {
             "symbol": {"type": "string", "description": "Market symbol such as ES or NQ."},
+            "trading_hours": {"type": "string", "enum": ["ETH", "RTH"], "default": "ETH", "description": "Use the analysis snapshot trading_hours when inspecting its market data."},
             "period": {
                 "type": "string",
                 "enum": ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
@@ -320,6 +336,7 @@ class MarketGetBarCountTool(LLMTool):
         query = HistoricalQuery(
             symbol=resolved_symbol,
             period=parsed.period,
+            trading_hours=parsed.trading_hours,
             start=parsed.start,
             end=parsed.end,
         )
@@ -330,11 +347,13 @@ class MarketGetBarCountTool(LLMTool):
             parsed.start,
             parsed.end,
             include_partial=parsed.include_partial,
+            trading_hours=parsed.trading_hours,
         )
         return {
             "tool": self.name,
             "symbol": parsed.symbol.upper(),
             "resolved_symbol": market.symbol,
+            "trading_hours": parsed.trading_hours,
             "period": market.period,
             "start": parsed.start.isoformat(),
             "end": parsed.end.isoformat(),

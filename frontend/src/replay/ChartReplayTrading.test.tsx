@@ -24,6 +24,17 @@ function replayDateInput(){if(!screen.queryByLabelText('回放开始时间'))fir
 function start(){fireEvent.click(screen.getByRole('button',{name:/^回放$/}));fireEvent.change(replayDateInput(),{target:{value:'2025-01-01T00:00'}});fireEvent.click(screen.getByRole('button',{name:'开始回放'}));}
 function openDetails(tab?:string){fireEvent.click(screen.getByRole('button',{name:'交易明细'}));if(tab)fireEvent.click(screen.getByRole('tab',{name:tab}));}
 
+it('keeps start/cancel together in an action group and cancels setup',()=>{
+  render(<Harness/>);
+  fireEvent.click(screen.getByRole('button',{name:/^回放$/}));
+  fireEvent.change(replayDateInput(),{target:{value:'2025-01-01T00:00'}});
+  const panel=screen.getByRole('group',{name:'K 线回放'});
+  const actions=within(panel).getByRole('group',{name:'回放启动操作'});
+  expect(within(actions).getByRole('button',{name:'开始回放'})).toBeEnabled();
+  fireEvent.click(within(actions).getByRole('button',{name:'取消'}));
+  expect(screen.queryByRole('group',{name:'K 线回放'})).not.toBeInTheDocument();
+});
+
 it.each(['', '0', '-1'])('blocks both replay starts for invalid required capital %s', cash=>{
  render(<Harness/>);
  fireEvent.click(screen.getByRole('button',{name:/^回放$/}));

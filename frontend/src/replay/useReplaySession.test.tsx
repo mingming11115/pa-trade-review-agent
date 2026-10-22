@@ -279,3 +279,25 @@ it('retains display changes made during a pending advance for its confirmed batc
  expect(periods.sort()).toEqual(['15m','1h','1m','5m']);
  expect(Object.keys(result.current.barsByPeriod)).toHaveLength(4);
 });
+
+it('drops the old timeframe batch when an external hours switch refresh fails',async()=>{
+ let hours:'ETH'|'RTH'='ETH',fail=false;
+ const requested:string[]=[];
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>{
+  if(url.includes('/bars')){
+   requested.push(new URL(url,'http://localhost').searchParams.get('trading_hours')!);
+   if(fail)throw new Error('market read failed');
+   return Response.json({bars:[{timestamp:'2025-01-01T00:00:00Z',open:1,high:2,low:1,close:2}]});
+  }
+  return Response.json(url.includes('/events')?{items:[],next_offset:null}:{...session,state:{...session.state,config:{trading_hours:hours}}});
+ }));
+ const {result}=renderHook(()=>useReplaySession('one'));
+ await waitFor(()=>expect(result.current.canTrade).toBe(true));
+ expect(result.current.bars).toHaveLength(1);
+ hours='RTH';fail=true;
+ await act(async()=>{await result.current.refresh();});
+ expect(result.current.session!.state.config.trading_hours).toBe('RTH');
+ expect(result.current.bars).toEqual([]);expect(result.current.barsByPeriod).toEqual({});
+ expect(result.current.dataCursor).toBeUndefined();expect(result.current.canTrade).toBe(false);
+ expect(requested).toEqual(['ETH','RTH']);
+});

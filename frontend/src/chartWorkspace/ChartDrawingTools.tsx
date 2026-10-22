@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { DrawingManager, OVERLAY_SPECS, type Drawing, type OHLC } from 'lightweight-charts-drawing';
 import type { UTCTimestamp } from 'lightweight-charts';
 import type { ChartOverlayContext } from '../chartOverlay';
@@ -11,9 +12,10 @@ import './chartDrawingTools.css';
 
 export interface ChartDrawingToolsProps {
  context:ChartOverlayContext; scope:string; period:Period; active:boolean; bars?:Bar[];
+ toolbarContainer?:HTMLElement|null;
  cursor?:string; disabled?:boolean; onInteractionStart?:()=>void; onEditingChange?:(editing:boolean)=>void;
 }
-export function ChartDrawingTools({context,scope,period,active,bars,cursor,disabled=false,onInteractionStart,onEditingChange}:ChartDrawingToolsProps){
+export function ChartDrawingTools({context,scope,period,active,bars,cursor,toolbarContainer,disabled=false,onInteractionStart,onEditingChange}:ChartDrawingToolsProps){
  const host=useRef<HTMLDivElement>(null);
  const latest=useRef({bars,cursor,disabled,onInteractionStart,onEditingChange});latest.current={bars,cursor,disabled,onInteractionStart,onEditingChange};
  const reconcile=useRef<()=>void>(()=>{});
@@ -76,7 +78,7 @@ export function ChartDrawingTools({context,scope,period,active,bars,cursor,disab
   document.addEventListener('pointerup',pointerUp);window.addEventListener('keydown',escape,true);
   sync();
   if(host.current)host.current.inert=latest.current.disabled;
-  const unmount=active&&host.current?mountUpstreamDrawingUI(host.current,manager,{assetScope:scope,saveImage:saveDrawingImage,isEditable:editable,onEditorChange:open=>{editorOpen=open;report(editable()&&(open||manager.tool()!==null||before!==null));}}):undefined;
+  const unmount=active&&host.current?mountUpstreamDrawingUI(host.current,manager,{chartContainer:toolbarContainer?context.container:undefined,assetScope:scope,saveImage:saveDrawingImage,isEditable:editable,onEditorChange:open=>{editorOpen=open;report(editable()&&(open||manager.tool()!==null||before!==null));}}):undefined;
   reconcile.current=()=>{if(latest.current.disabled)cancel();if(host.current)host.current.inert=latest.current.disabled;sync();report(editable()&&(editorOpen||manager.tool()!==null||before!==null));};
   return()=>{
    disposed=true;cancelled=true;reconcile.current=()=>{};
@@ -86,10 +88,11 @@ export function ChartDrawingTools({context,scope,period,active,bars,cursor,disab
    document.removeEventListener('pointerup',pointerUp);window.removeEventListener('keydown',escape,true);
    manager.destroy();context.setInteractionLocked(false);report(false);
   };
- },[context,scope,period,active]);
+ },[context,scope,period,active,toolbarContainer]);
  useEffect(()=>{reconcile.current();},[cursor,disabled]);
+ const drawingUI=active&&toolbarContainer!==null?<div ref={host} className="chart-drawing-ui" data-chart-drawing-ui data-upstream="lightweight-charts-drawing/demo@0291d9c" onPointerDown={event=>{event.stopPropagation();latest.current.onInteractionStart?.();}} onContextMenu={event=>event.stopPropagation()}/>:null;
  return <>
-  {active&&<div ref={host} className="chart-drawing-ui" data-chart-drawing-ui data-upstream="lightweight-charts-drawing/demo@0291d9c" onPointerDown={event=>{event.stopPropagation();latest.current.onInteractionStart?.();}} onContextMenu={event=>event.stopPropagation()}/>}
+  {toolbarContainer?createPortal(drawingUI,toolbarContainer):drawingUI}
   {!active&&<OfficialVerticalMarkers context={context} scope={scope} period={period} bars={bars} cursor={cursor} active={false} disabled/>}
   {error&&<span className="chart-drawing-error" role="status">{error}</span>}
  </>;

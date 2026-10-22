@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.core.errors import AppError
-from app.core.models import Bar, BasicAnalysis, Direction, Period
+from app.core.models import Bar, BasicAnalysis, Direction, Period, TradingHours
+from app.market.trading_hours import aggregate_session_bars
 
 
 PERIOD_SECONDS = {
@@ -17,8 +18,10 @@ PERIOD_SECONDS = {
 }
 
 
-def aggregate_bars(bars: list[Bar], period: Period) -> list[Bar]:
+def aggregate_bars(bars: list[Bar], period: Period, *, symbol: str = "", trading_hours: TradingHours = "ETH") -> list[Bar]:
     """将 1 分钟 K 线聚合为更高周期的 K 线。"""
+    if trading_hours == "RTH":
+        return aggregate_session_bars(bars, period.value, symbol, trading_hours)
     if period is Period.minute_1 or not bars:
         return bars
 

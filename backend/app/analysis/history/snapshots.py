@@ -14,6 +14,7 @@ from app.core.errors import AppError
 from app.core.models import Bar, HistoricalQuery
 from app.market.analysis import PERIOD_SECONDS
 from app.market.service import closed_boundary
+from app.market.trading_hours import RTH_MAX_RANGE_DAYS, bucket_start, bucket_end
 
 LATEST_ANALYSIS_BARS = 100
 
@@ -45,7 +46,7 @@ def _normalized_bar(bar: Bar) -> dict[str, object]:
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
     timestamp = timestamp.astimezone(timezone.utc)
-    return {
+    payload = {
         "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
         "timeframe": bar.timeframe,
         "session": bar.session,
@@ -56,6 +57,9 @@ def _normalized_bar(bar: Bar) -> dict[str, object]:
         "close": bar.close,
         "volume": bar.volume,
     }
+    if bar.trading_hours == "RTH":
+        payload["trading_hours"] = bar.trading_hours
+    return payload
 
 
 def bars_hash(bars: list[Bar]) -> str:
@@ -74,12 +78,35 @@ async def create_input_snapshot(owner_id: uuid.UUID | None, task: AnalysisTask, 
         raise ValueError("review snapshot creation is handled by the review runner")
     config = AnalysisTaskConfig.model_validate(task.config_json)
     current = now or datetime.now(timezone.utc)
-    end = closed_boundary(current, config.period.value)
+    end = closed_boundary(current, "1m" if config.trading_hours == "RTH" else config.period.value)
     start = end - timedelta(seconds=PERIOD_SECONDS[config.period] * (LATEST_ANALYSIS_BARS + 20))
-    query = HistoricalQuery(symbol=config.symbol, period=config.period, start=start, end=end, analysis_mode="historical")
+    if config.trading_hours == "RTH":
+        start = bucket_start(min(start, end - timedelta(days=1)), config.period.value, config.symbol, config.trading_hours)
+    query = HistoricalQuery(symbol=config.symbol, period=config.period, start=start, end=end,
+        analysis_mode="historical", trading_hours=config.trading_hours)
     resolved = resolve_contract_symbol(query.symbol, query.start, query.end)
-    bars = await provider.get_range(query.model_copy(update={"symbol": resolved}))
-    bars = sorted((bar for bar in bars if bar.timestamp < end), key=lambda bar: bar.timestamp)[-LATEST_ANALYSIS_BARS:]
+    collected: dict[datetime, Bar] = {}
+    # Bounded expansion covers weekends and the shorter RTH trading day. Fetch
+    # disjoint earlier windows so a retry does not repeatedly reload the suffix.
+    window_end = end
+    window_start = start
+    span = end - start
+    search_floor = bucket_start(end - timedelta(days=RTH_MAX_RANGE_DAYS[config.period.value]),
+        config.period.value, resolved, config.trading_hours)
+    for _ in range(4 if config.trading_hours == "RTH" else 1):
+        window = query.model_copy(update={"symbol": resolved, "start": window_start, "end": window_end})
+        for bar in await provider.get_range(window):
+            if bar.timestamp < end and (config.trading_hours == "ETH"
+                    or bucket_end(bar.timestamp, config.period.value, resolved, config.trading_hours) <= end):
+                collected[bar.timestamp] = bar
+        if len(collected) >= LATEST_ANALYSIS_BARS:
+            break
+        window_end = window_start
+        span *= 2
+        window_start = max(search_floor, bucket_start(window_start - span, config.period.value, resolved, config.trading_hours))
+        if window_start >= window_end:
+            break
+    bars = sorted(collected.values(), key=lambda bar: bar.timestamp)[-LATEST_ANALYSIS_BARS:]
     if len(bars) < LATEST_ANALYSIS_BARS:
         raise AppError("analysis_bars_insufficient", f"最新行情不足 {LATEST_ANALYSIS_BARS} 根已收盘 K 线", 422)
     query = query.model_copy(update={"start": bars[0].timestamp})
@@ -123,6 +150,7 @@ async def create_review_input_snapshot(owner_id: uuid.UUID | None, task: Analysi
             query = HistoricalQuery(
                 symbol=trade.symbol_root,
                 period=period,
+                trading_hours=config.trading_hours,
                 start=trade.entered_at,
                 end=trade.exited_at,
                 analysis_mode="trade_review",

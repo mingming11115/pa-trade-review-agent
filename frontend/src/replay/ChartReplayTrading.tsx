@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ComponentProps } from 'react';
 import { TradingChart } from '../TradingChart';
 import { ChartWorkspace } from '../chartWorkspace/ChartWorkspace';
-import type { ReplayCommandInput, ReplayOrder, TradeMarker } from '../types';
+import type { ReplayCommandInput, ReplayOrder, TradeMarker, TradingHours, Period } from '../types';
 import { OrderTicket, type ChartOrderPlacement, type ChartOrderPrefill } from './OrderTicket';
 import { ReplayTradeDetails } from './ReplayTradeDetails';
 import { ReplayControls } from './ReplayControls';
@@ -11,7 +11,7 @@ import { ReplayChartOverlay, type ChartOrderRequest } from './ReplayChartOverlay
 import './replayLayout.css';
 
 export { orderLabels } from './ReplayTradeDetails';
-export function ChartReplayTrading({controller:c,symbol,userScope='local',...chart}:ComponentProps<typeof TradingChart>&{controller:ReplayTradingController;symbol:string;userScope?:string}) {
+export function ChartReplayTrading({controller:c,symbol,userScope='local',tradingHours='ETH',...chart}:ComponentProps<typeof TradingChart>&{controller:ReplayTradingController;symbol:string;userScope?:string;sourcePeriod?:Period|''}) {
  const r=c.replay,s=r.session;
  const [editing,setEditing]=useState<ReplayOrder>();
  const [chartOrder,setChartOrder]=useState<ChartOrderPlacement & {sessionId:string;revision:number}>();
@@ -48,6 +48,7 @@ export function ChartReplayTrading({controller:c,symbol,userScope='local',...cha
     (expected&&(session.id!==expected.sessionId||session.revision!==expected.revision))){
    setChartError('回放状态已变化，请在最新进度重新操作。');return false;
   }
+  if((input.type==='place_order'||input.type==='amend_order') && (!input.kind || input.kind==='market') && current.replay.canMarketTrade===false){setChartError('请推进至 RTH 后交易');return false;}
   current.replay.setPlaying(false);setChartError('');
   return current.replay.command(input);
  }
@@ -61,12 +62,12 @@ export function ChartReplayTrading({controller:c,symbol,userScope='local',...cha
  const validCash=cash.trim()!==''&&Number.isFinite(Number(cash))&&Number(cash)>0;
  const fills=r.events.items.flatMap(e=>'fills'in e?e.fills:[]);
  const visible=fills.filter(f=>!r.observedCursor||Date.parse(f.timestamp)<=Date.parse(r.observedCursor));
- const markers:TradeMarker[]=visible.map(f=>({timestamp:new Date(Date.parse(f.timestamp)-60000).toISOString(),position:f.side==='buy'?'belowBar':'aboveBar',shape:f.side==='buy'?'arrowUp':'arrowDown',color:f.side==='buy'?'#137e61':'#bd493c',text:`${f.side==='buy'?'买':'卖'} ${f.quantity} @${f.price}`}));
+ const markers:TradeMarker[]=visible.map(f=>({timestamp:f.bar_timestamp??new Date(Date.parse(f.timestamp)-60000).toISOString(),position:f.side==='buy'?'belowBar':'aboveBar',shape:f.side==='buy'?'arrowUp':'arrowDown',color:f.side==='buy'?'#137e61':'#bd493c',text:`${f.side==='buy'?'买':'卖'} ${f.quantity} @${f.price}`}));
  return <div className={`chart-replay-trading${c.id&&s?' chart-replay-trading-active':''}`} data-replay-interactive>
-  {!c.id ? <ChartWorkspace {...chart} symbol={symbol} userScope={userScope}
+  {!c.id ? <ChartWorkspace {...chart} symbol={symbol} userScope={userScope} tradingHours={tradingHours}
     onStartTradingReplay={start=>{
      if(!validCash)return;
-     void c.start({mode:'training',symbol,start,random_start:!start,config:{initial_cash:cash,fee_per_side:fee,slippage_ticks:slip,profit_target:profitTarget||null,loss_limit:lossLimit||null}},'1m');
+     void c.start({mode:'training',symbol,start,random_start:!start,config:{trading_hours:tradingHours,initial_cash:cash,fee_per_side:fee,slippage_ticks:slip,profit_target:profitTarget||null,loss_limit:lossLimit||null}},'1m');
     }}
     replayStartDisabled={!validCash}
     replayStarting={c.busy} replayStartingSeconds={c.startingSeconds} onCancelTradingReplay={()=>c.requestLeave()}
@@ -85,7 +86,7 @@ export function ChartReplayTrading({controller:c,symbol,userScope='local',...cha
     </div>}
    /> : !s ? <div>{r.loading&&<p role="status">正在恢复回放… {r.loadingSeconds} 秒</p>}<button onClick={()=>c.requestLeave()}>退出加载</button></div> : <>
     <div ref={chartFrame} className="replay-chart-frame" aria-busy={r.busy}>
-     <ChartWorkspace symbol={symbol} userScope={userScope} bars={r.bars} chartKey={`replay:${c.id}`} period={r.period} locked timezoneOffsetMinutes={chart.timezoneOffsetMinutes} markers={markers}
+     <ChartWorkspace symbol={symbol} tradingHours={s.state.config.trading_hours??"ETH"} userScope={userScope} bars={r.bars} chartKey={`replay:${c.id}`} period={r.period} locked timezoneOffsetMinutes={chart.timezoneOffsetMinutes} markers={markers}
        onDrawingInteractionChange={setDrawingEditing}
        replay={{id:c.id,cursor:r.observedCursor??s.state.cursor,dataCursor:r.dataCursor,barsByPeriod:r.barsByPeriod,loading:r.loading,disabled:r.busy||r.retryAvailable||c.exitOpen||!!chartOrder,changeDisplayPeriods:r.changeDisplayPeriods,onPause:()=>r.setPlaying(false)}}
        renderOverlay={context=><ReplayChartOverlay context={context} session={s} period={r.period} stale={!!r.dataCursor&&r.dataCursor!==s.state.cursor} disabled={!r.canTrade||c.exitOpen||!!chartOrder||drawingEditing} hidden={!!r.observedCursor||s.mode!=='training'} contextKey={contextKey} pending={r.retryAvailable} quantity={quickQuantity} onQuantityChange={setQuickQuantity} onMarketOrder={(side,quantity,expected)=>chartCommand({type:'place_order',kind:'market',side,quantity,reduce_only:false},expected)} onPause={()=>r.setPlaying(false)} onOrder={openChartOrder} onClosePosition={closeChartPosition} onProtection={(input,expected)=>chartCommand({type:'update_protection',...input},expected)}/>}/>
@@ -101,6 +102,7 @@ export function ChartReplayTrading({controller:c,symbol,userScope='local',...cha
       s.state.account.profit_target_reached&&`已达到回放盈利目标 ${s.state.config.profit_target} USD`,
       s.state.account.loss_limit_reached&&`已达到回放亏损限制 ${s.state.config.loss_limit} USD`,
     ].filter(Boolean).join('；')}。回放和交易仍可继续。</p>}
+    {!r.canMarketTrade&&s.mode==="training"&&s.state.config.trading_hours==="RTH"&&<p className="replay-observer-notice" role="status">请推进至 RTH 后交易。已有持仓与挂单保留。</p>}
     {r.observedCursor&&<p className="replay-observer-notice">正在回看，持仓与资金为最新回放进度；回到进度后可下单。</p>}
     <section className="replay-trade-details">
      <div className="replay-trade-details-heading"><button aria-label="交易明细" aria-expanded={detailsOpen} aria-controls={`replay-details-${c.id}`} onClick={()=>setDetailsOpen(open=>!open)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d={detailsOpen?'m5 12 5-5 5 5':'m5 8 5 5 5-5'}/></svg>交易明细</button><span>{s.state.position.quantity?`${s.state.position.quantity>0?'多':'空'} ${Math.abs(s.state.position.quantity)} 手`:'空仓'}<span className="replay-details-equity"> · 权益 {Number(s.state.account.equity).toLocaleString('en-US',{maximumFractionDigits:2})} USD</span></span></div>

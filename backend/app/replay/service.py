@@ -10,10 +10,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.errors import AppError
 from app.core.logging_context import get_trace_id
+from app.core.models import TradingHours
 from app.market.service import PERIOD_MINUTES, floor_bucket
+from app.market.trading_hours import bucket_end, bucket_start, in_trading_hours
 from app.replay.accounting import apply_fill, mark_to_market
 from app.replay.contracts import AccountState, EngineState, InstrumentSpec, MinuteSnapshot, ReplayCommand, ReplayFill, ReplayOrder, SessionCreate
-from app.replay.engine import match_minute
+from app.replay.engine import can_market_trade, match_minute
 from app.replay.history import build_trade_events, historical_state
 from app.replay.instruments import get_instrument
 from app.replay.market import ReplayMarket, visible_bars
@@ -31,6 +33,12 @@ class ReplayService:
     def __init__(self, repository: ReplayRepository | None = None, market: ReplayMarket | None = None):
         self.repository = repository or ReplayRepository()
         self.market = market or ReplayMarket()
+
+    async def _load_minutes(self, symbol: str, start: datetime, end: datetime,
+                            trading_hours: TradingHours, *, require_complete: bool = False) -> list[MinuteSnapshot]:
+        if trading_hours == 'RTH':
+            return await self.market.load(symbol, start, end, trading_hours=trading_hours, require_complete=require_complete)
+        return await self.market.load(symbol, start, end, require_complete=True) if require_complete else await self.market.load(symbol, start, end)
 
     async def create(self, scope: str, payload: SessionCreate) -> dict[str, Any]:
         from app.trades.service import Trade, TradeResponse
@@ -59,19 +67,30 @@ class ReplayService:
         else:
             start = payload.start
             if payload.random_start:
-                start = await self.market.random_start(payload.symbol)
+                start = (await self.market.random_start(payload.symbol, trading_hours="RTH") if payload.config.trading_hours == "RTH" else await self.market.random_start(payload.symbol))
         if start is None or start > datetime.now(UTC) or (end and end <= start):
             reject('请选择有效历史时间范围')
         start = start.astimezone(UTC).replace(second=0, microsecond=0)
-        bars = await self.market.load(payload.symbol, start-timedelta(minutes=120), start)
-        bars = [bar for bar in bars if bar.confirmed and bar.timestamp+timedelta(minutes=1)<=start]
-        if not bars:
+        hours = payload.config.trading_hours
+        if payload.mode == 'training' and hours == 'RTH':
+            # Resolve to a real, eligible minute without revealing that minute's OHLC.
+            # Historical sessions retain their source-trade range, including overnight events.
+            first = await self.market.next_minute(payload.symbol, start, trading_hours=hours)
+            start = first.timestamp
+            if end and start >= end:
+                reject('所选范围内没有可用的 RTH 行情')
+        bars = await self._load_minutes(payload.symbol, start-timedelta(minutes=120), start, hours)
+        bars = sorted((bar for bar in bars if bar.confirmed and bar.timestamp+timedelta(minutes=1)<=start
+                       and in_trading_hours(bar.timestamp, payload.symbol, hours)), key=lambda bar: bar.timestamp)
+        if payload.mode == 'training' and not bars and hours == 'ETH':
             # A closed-session start remains usable if a subsequent minute exists.
             first = await self.market.next_minute(payload.symbol, start)
             start = first.timestamp
         state = EngineState(cursor=start, config=payload.config,
                             account=AccountState(cash=payload.config.initial_cash, equity=payload.config.initial_cash, peak_equity=payload.config.initial_cash),
-                            last_price=bars[-1].close if bars else None, instrument_id=bars[-1].instrument_id if bars else 0)
+                            last_price=bars[-1].close if bars else None,
+                            last_price_at=bars[-1].timestamp if bars else None,
+                            instrument_id=bars[-1].instrument_id if bars else 0)
         row = ReplaySession(scope=scope, mode=payload.mode, symbol=payload.symbol, state=state.model_dump(mode='json'),
                             config=dict(instrument=get_instrument(payload.symbol).model_dump(mode='json'), rules_version=1,
                                         start=start.isoformat(), end=end.isoformat() if end else None))
@@ -80,15 +99,17 @@ class ReplayService:
     async def get(self, scope: str, session_id: str) -> dict[str, Any]:
         return await self.repository.get(scope, session_id)
 
-    async def bars(self, scope: str, session_id: str, period: str, cursor: datetime | None, limit: int) -> dict[str, Any]:
+    async def bars(self, scope: str, session_id: str, period: str, cursor: datetime | None, limit: int,
+                   *, trading_hours: TradingHours | None = None) -> dict[str, Any]:
         view = await self.get(scope, session_id)
+        hours = trading_hours or view['state']['config'].get('trading_hours', 'ETH')
         tip = datetime.fromisoformat(view['state']['cursor'])
         cursor = min(cursor, tip) if cursor else tip
         minutes = PERIOD_MINUTES[period]
         # Count actual candles across closed sessions, within the existing 30-day bound.
         cutoff = cursor - timedelta(days=30)
-        earliest = floor_bucket(cutoff, minutes)
-        if earliest < cutoff:
+        earliest = floor_bucket(cutoff, minutes) if hours == 'ETH' else cutoff
+        if hours == 'ETH' and earliest < cutoff:
             earliest += timedelta(minutes=minutes)
         end = cursor
         span = timedelta(minutes=minutes * (limit + 1))
@@ -96,9 +117,10 @@ class ReplayService:
         bars: list[dict[str, Any]] = []
         while end > earliest:
             # Aligned adjoining windows preserve complete historical candle OHLC.
-            start = max(floor_bucket(end - span, minutes), earliest)
-            data.extend(await self.market.load(view['symbol'], start, end))
-            bars = visible_bars(data, cursor, period, limit)
+            start = max(bucket_start(end - span, period, view['symbol'], hours), earliest)
+            data.extend(await self._load_minutes(view['symbol'], start, end, hours))
+            bars = [bar for bar in visible_bars(data, cursor, period, limit, view['symbol'], hours)
+                    if datetime.fromisoformat(bar['timestamp']) >= earliest]
             if len(bars) >= limit:
                 break
             end = start
@@ -114,6 +136,7 @@ class ReplayService:
 
     async def _advance_minutes(self, view: dict[str, Any], period: str) -> tuple[list[MinuteSnapshot], datetime]:
         cursor = datetime.fromisoformat(view['state']['cursor'])
+        hours = view['state']['config'].get('trading_hours', 'ETH')
         latest = datetime.now(UTC).replace(second=0, microsecond=0)
         end = datetime.fromisoformat(view['config']['end']) if view['config']['end'] else None
         if end is not None:
@@ -123,22 +146,25 @@ class ReplayService:
                 reject('已到回放结束时间')
         if cursor >= latest:
             raise AppError('replay_no_market', '暂无后续已完成分钟行情，请稍后重试', 409)
-        first = await self.market.next_minute(view['symbol'], cursor)
+        first = (await self.market.next_minute(view['symbol'], cursor, trading_hours=hours)
+                 if hours == 'RTH' else await self.market.next_minute(view['symbol'], cursor))
         if first.timestamp + timedelta(minutes=1) > latest:
             if end is not None and first.timestamp + timedelta(minutes=1) > end:
                 reject('已到回放结束时间')
             raise AppError('replay_no_market', '暂无后续已完成分钟行情，请稍后重试', 409)
-        if first.timestamp < cursor or not first.confirmed:
+        if (first.timestamp < cursor or not first.confirmed
+                or not in_trading_hours(first.timestamp, view['symbol'], hours)):
             raise AppError('replay_market_gap', '下一根行情未确认，已暂停；请稍后重试', 409)
 
-        target = min(floor_bucket(first.timestamp, PERIOD_MINUTES[period]) + timedelta(minutes=PERIOD_MINUTES[period]), latest)
+        target = min(bucket_end(first.timestamp, period, view['symbol'], hours), latest)
         minutes = [first]
         if target > first.timestamp + timedelta(minutes=1):
-            data = await self.market.load(view['symbol'], first.timestamp, target, require_complete=True)
-            # Matching must prove missing minutes; chart history may show sparse data.
+            data = await self._load_minutes(view['symbol'], first.timestamp, target, hours, require_complete=True)
+            # The range read proves coverage, including legitimate minutes with no trades.
             # Prefer its snapshot if the first minute was refreshed since next_minute.
             by_time = {first.timestamp: first}
-            by_time.update({row.timestamp: row for row in data if first.timestamp <= row.timestamp < target})
+            by_time.update({row.timestamp: row for row in data if first.timestamp <= row.timestamp < target
+                            and in_trading_hours(row.timestamp, view['symbol'], hours)})
             minutes = sorted(by_time.values(), key=lambda row: row.timestamp)
         if any(not row.confirmed for row in minutes):
             raise AppError('replay_market_gap', '下一根行情包含未确认分钟，已暂停；请稍后重试', 409)
@@ -146,7 +172,8 @@ class ReplayService:
 
     async def command(self, scope: str, session_id: str, payload: ReplayCommand) -> dict[str, Any]:
         started = time.monotonic()
-        fields = dict(trace_id=get_trace_id(), session_id=session_id, operation_id=payload.operation_id, revision=payload.expected_revision, period=payload.period)
+        fields = dict(trace_id=get_trace_id(), session_id=session_id, operation_id=payload.operation_id,
+                      revision=payload.expected_revision, period=payload.period, trading_hours=payload.trading_hours)
         try:
             prior = await self.repository.previous(scope, session_id, payload)
             if prior is not None:
@@ -180,8 +207,10 @@ class ReplayService:
                     reject('定位时间超出回放范围')
                 if view['config']['end'] and target > datetime.fromisoformat(view['config']['end']):
                     reject('定位时间超出回放结束时间')
-                data = await self.market.load(view['symbol'], target-timedelta(minutes=120), target)
-                data = [bar for bar in data if bar.confirmed and bar.timestamp+timedelta(minutes=1)<=target]
+                hours = view['state']['config'].get('trading_hours', 'ETH')
+                data = await self._load_minutes(view['symbol'], target-timedelta(minutes=120), target, hours)
+                data = [bar for bar in data if bar.confirmed and bar.timestamp+timedelta(minutes=1)<=target
+                        and in_trading_hours(bar.timestamp, view['symbol'], hours)]
                 minute = data[-1] if data else None
 
             def change(current: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
@@ -205,6 +234,12 @@ class ReplayService:
                 elif payload.type == 'seek':
                     state.cursor = target
                     state.last_price = minute.close if minute else None
+                    state.last_price_at = minute.timestamp if minute else None
+                elif payload.type == 'set_trading_hours':
+                    # Configuration changes never replay, rewind, or revalue history.
+                    if payload.trading_hours is None:
+                        reject('请选择交易时段')
+                    state.config.trading_hours = payload.trading_hours
                 elif payload.type in {'finish', 'abandon'}:
                     if payload.type=='finish' and state.position.quantity:
                         reject('请先平仓再结束训练')
@@ -233,6 +268,8 @@ class ReplayService:
             raise
 
     def _edit_order(self, state: EngineState, cmd: ReplayCommand, instrument: InstrumentSpec) -> list[ReplayFill]:
+        if cmd.type in {'place_order', 'amend_order'} and cmd.kind == 'market' and not can_market_trade(state, instrument.symbol):
+            reject('请推进至 RTH 后交易' if state.config.trading_hours == 'RTH' else '请先推进到有行情的位置')
         for price in [cmd.limit_price, cmd.stop_price, cmd.stop_loss, cmd.take_profit]:
             if price is not None and price % instrument.tick_size:
                 reject(f'价格须符合最小变动 {instrument.tick_size}')
@@ -283,6 +320,7 @@ class ReplayService:
             reject('请先推进到有行情的位置')
         slip = instrument.tick_size * state.config.slippage_ticks
         fill = ReplayFill(order_id=order.id, timestamp=state.cursor, side=order.side, quantity=order.quantity,
+                          bar_timestamp=state.last_price_at,
                           price=price + (slip if order.side == 'buy' else -slip),
                           fee=state.config.fee_per_side * order.quantity, reason='reduce' if order.reduce_only else 'entry')
         was_flat = not p.quantity

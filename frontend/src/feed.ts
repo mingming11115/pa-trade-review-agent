@@ -1,4 +1,5 @@
-import type { Bar, Period } from "./types";
+import { barCloseAtMs } from "./tradingHours";
+import type { Bar, Period, TradingHours } from "./types";
 
 /** Aligned with backend scheduled realtime Snapshot (~80 closed bars). */
 export const ANALYSIS_LOOKBACK_BARS = 80;
@@ -58,8 +59,58 @@ export function formatChartTime(epochSeconds: number, offsetMinutes: number, sty
   return style === "full" ? `${year}-${month}-${day} ${hours}:${minutes}` : `${month}-${day} ${hours}:${minutes}`;
 }
 
-export function lookbackDurationMs(period: Period, bars: number = ANALYSIS_LOOKBACK_BARS): number {
-  return PERIOD_MINUTES[period] * bars * 60_000;
+export function tradingRangeLimitMs(period: Period): number {
+  return (period === "1d" ? 365 : period === "4h" ? 180 : 30) * 24 * 60 * 60_000;
+}
+
+export function lookbackDurationMs(period: Period, bars: number = ANALYSIS_LOOKBACK_BARS, tradingHours: TradingHours = "ETH"): number {
+  const duration = PERIOD_MINUTES[period] * bars * 60_000;
+  return tradingHours === "RTH" ? Math.min(tradingRangeLimitMs(period), Math.max(duration * 5, 4 * 24 * 60 * 60_000)) : duration;
+}
+
+const cmeLocalHour = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York", weekday: "short", hour: "2-digit", hourCycle: "h23",
+});
+
+// Skip only the regular CME weekend/daily break, never infer a holiday or data gap.
+function beforeRegularClosure(end: number, earliest: number): number {
+  while (end > earliest) {
+    const parts = cmeLocalHour.formatToParts(new Date(end - 1));
+    const day = parts.find(p => p.type === "weekday")?.value;
+    const hour = Number(parts.find(p => p.type === "hour")?.value);
+    const closed = day === "Sat" || (day === "Fri" && hour >= 17)
+      || (day === "Sun" && hour < 18) || (day !== "Fri" && day !== "Sun" && hour === 17);
+    if (!closed) break;
+    end = Math.max(earliest, Math.floor((end - 1) / 3_600_000) * 3_600_000);
+  }
+  return end;
+}
+
+/** Load earlier bars without treating an empty calendar window as the archive boundary. */
+export async function loadHistoryBars(
+  period: Period, start: string, end: string,
+  load: (start: string, end: string) => Promise<Bar[]>,
+  isCurrent: () => boolean = () => true,
+): Promise<Bar[]> {
+  const endMs = Date.parse(end);
+  const limit = tradingRangeLimitMs(period);
+  const earliest = endMs - limit;
+  const maxRequest = PERIOD_MINUTES[period] * 2000 * 60_000;
+  // Short ETH chunks can fit entirely inside a weekend. Include earlier sessions
+  // in the first request so a failed upstream cannot hide existing Friday bars.
+  let duration = Math.min(limit, Math.max(endMs - Date.parse(start), 4 * 24 * 60 * 60_000));
+  let right = endMs;
+  while (isCurrent()) {
+    right = beforeRegularClosure(right, earliest);
+    if (right <= earliest) return [];
+    const left = Math.max(endMs - duration, right - maxRequest);
+    const bars = await load(new Date(left).toISOString(), new Date(right).toISOString());
+    if (!isCurrent()) return [];
+    if (bars.length || left <= earliest) return bars;
+    right = left;
+    duration = Math.min(limit, duration * 2);
+  }
+  return [];
 }
 
 /** UTC ms when the currently forming period bucket closes. */
@@ -86,17 +137,15 @@ export function formatBarCountdown(remainingMs: number): string {
 }
 
 /** Rolling window for live poll / realtime Snapshot (end ≈ now). */
-export function liveLookbackWindow(period: Period, now: Date = new Date()): { start: string; end: string } {
+export function liveLookbackWindow(period: Period, now: Date = new Date(), tradingHours: TradingHours = "ETH"): { start: string; end: string } {
   const end = now.toISOString();
-  const start = new Date(now.getTime() - lookbackDurationMs(period)).toISOString();
+  const start = new Date(now.getTime() - lookbackDurationMs(period, ANALYSIS_LOOKBACK_BARS, tradingHours)).toISOString();
   return { start, end };
 }
 
 /** Bars whose whole period ends at or before `now`; excludes the forming bucket. */
-export function closedBars(bars: Bar[], period: Period, now: Date = new Date()): Bar[] {
-  const periodMs = PERIOD_MINUTES[period] * 60_000;
-  const boundaryMs = Math.floor(now.getTime() / periodMs) * periodMs;
-  return bars.filter((bar) => new Date(bar.timestamp).getTime() < boundaryMs);
+export function closedBars(bars: Bar[], period: Period, now: Date = new Date(), symbol = ""): Bar[] {
+  return bars.filter((bar) => barCloseAtMs(bar, period, symbol) <= now.getTime());
 }
 
 export function mergeBars(existing: Bar[], incoming: Bar[]): Bar[] {
@@ -114,11 +163,12 @@ export function chartIdentity(opts: {
   symbol: string;
   period: string;
   feedKind: "history" | "live";
+  trading_hours?: TradingHours;
   start?: string;
   end?: string;
 }): string {
-  if (opts.feedKind === "live") return `${opts.symbol}|${opts.period}|live`;
-  return `${opts.symbol}|${opts.period}|history|${opts.start ?? ""}|${opts.end ?? ""}`;
+  if (opts.feedKind === "live") return `${opts.symbol}|${opts.period}|live${opts.trading_hours === "RTH" ? "|RTH" : ""}`;
+  return `${opts.symbol}|${opts.period}|history|${opts.start ?? ""}|${opts.end ?? ""}${opts.trading_hours === "RTH" ? "|RTH" : ""}`;
 }
 
 /** True when `next` is `prev` with older bars prepended (same trailing sequence). */

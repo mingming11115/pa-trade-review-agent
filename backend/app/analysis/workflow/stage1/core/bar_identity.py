@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.analysis.workflow.stage1.core.data.base import KlineBar, KlineFrame
 from app.analysis.workflow.stage1.core.datetime_ts import ts_open_to_ms
+from app.core.models import TradingHours
+from app.market.trading_hours import rth_window
 
 
 SessionName = Literal["CME", "US_EQUITY_RTH"]
@@ -32,6 +34,7 @@ class BarRef(BaseModel):
     bar_timestamp: datetime
     timeframe: str = Field(min_length=1)
     session: SessionName
+    trading_hours: TradingHours = "ETH"
     day_index: int = Field(ge=1)
 
     @model_validator(mode="after")
@@ -43,8 +46,8 @@ class BarRef(BaseModel):
         return self
 
     @property
-    def identity(self) -> tuple[datetime, str, str]:
-        return (self.bar_timestamp, self.timeframe, self.session)
+    def identity(self) -> tuple[datetime, str, str, str]:
+        return (self.bar_timestamp, self.timeframe, self.session, self.trading_hours)
 
 
 class BarRange(BaseModel):
@@ -53,8 +56,9 @@ class BarRange(BaseModel):
 
     @model_validator(mode="after")
     def validate_identity_domain(self) -> "BarRange":
-        if self.start.timeframe != self.end.timeframe or self.start.session != self.end.session:
-            raise ValueError("bar_range endpoints must share timeframe and session")
+        if (self.start.timeframe != self.end.timeframe or self.start.session != self.end.session
+                or self.start.trading_hours != self.end.trading_hours):
+            raise ValueError("bar_range endpoints must share timeframe, session and trading_hours")
         if self.start.bar_timestamp > self.end.bar_timestamp:
             raise ValueError("bar_range start must not be later than end")
         return self
@@ -122,12 +126,14 @@ def assign_bar_refs(
     *,
     symbol: str,
     timeframe: str,
+    trading_hours: TradingHours | None = None,
 ) -> list[BarRef]:
     """Return references aligned to ``bars``, numbered from each actual session open."""
     return assign_timestamp_refs(
         [bar.ts_open for bar in bars],
         symbol=symbol,
         timeframe=timeframe,
+        trading_hours=trading_hours or (bars[0].trading_hours if bars else "ETH"),
     )
 
 
@@ -136,6 +142,7 @@ def assign_timestamp_refs(
     *,
     symbol: str,
     timeframe: str,
+    trading_hours: TradingHours = "ETH",
 ) -> list[BarRef]:
     """Return references aligned to arbitrary bar-open timestamps."""
     session = session_for_symbol(symbol)
@@ -148,41 +155,50 @@ def assign_timestamp_refs(
             raise ValueError("duplicate bar timestamp")
         seen.add(timestamp_ms)
         opened_at = _utc_datetime(timestamp_ms)
+        if trading_hours == "RTH":
+            elapsed = (opened_at - rth_window(opened_at, symbol)[0]).total_seconds()
+            day_index = max(1, int(elapsed // _timeframe_seconds(timeframe)) + 1)
+        else:
+            day_index = _day_index(opened_at, session, timeframe)
         refs[original_index] = BarRef(
             bar_timestamp=opened_at,
             timeframe=timeframe,
             session=session,
-            day_index=_day_index(opened_at, session, timeframe),
+            trading_hours=trading_hours,
+            day_index=day_index,
         )
     return [ref for ref in refs if ref is not None]
 
 
 def resolve_bar_ref(frame: KlineFrame, ref: BarRef) -> KlineBar:
-    if ref.timeframe != frame.timeframe or ref.session != session_for_symbol(frame.symbol):
+    if (ref.timeframe != frame.timeframe or ref.session != session_for_symbol(frame.symbol)
+            or ref.trading_hours != frame.trading_hours):
         raise ValueError("bar_ref does not exist in frame")
     timestamp_ms = int(ref.bar_timestamp.timestamp() * 1000)
     match = next((bar for bar in frame.bars if ts_open_to_ms(bar.ts_open) == timestamp_ms), None)
     if match is None:
         raise ValueError("bar_ref does not exist in frame")
     canonical = assign_timestamp_refs(
-        [match.ts_open], symbol=frame.symbol, timeframe=frame.timeframe
+        [match.ts_open], symbol=frame.symbol, timeframe=frame.timeframe, trading_hours=frame.trading_hours
     )[0]
     if ref.day_index != canonical.day_index:
         raise ValueError("bar_ref day_index does not match its session timestamp")
     return match
 
 
-def enrich_api_bars(bars: Sequence[object], *, symbol: str, timeframe: str) -> list[object]:
+def enrich_api_bars(bars: Sequence[object], *, symbol: str, timeframe: str, trading_hours: TradingHours | None = None) -> list[object]:
     """Copy Pydantic API bars with authoritative identity metadata attached."""
     refs = assign_timestamp_refs(
         [getattr(bar, "timestamp") for bar in bars],
         symbol=symbol,
         timeframe=timeframe,
+        trading_hours=trading_hours or (getattr(bars[0], "trading_hours", "ETH") if bars else "ETH"),
     )
     return [
         bar.model_copy(update={
             "timeframe": ref.timeframe,
             "session": ref.session,
+            "trading_hours": ref.trading_hours,
             "day_index": ref.day_index,
         })
         for bar, ref in zip(bars, refs)

@@ -1,4 +1,4 @@
-import type { AnalysisTask, Period } from "./types";
+import type { AnalysisTask, Period, TradingHours } from "./types";
 
 export interface SidebarTaskData {
   id: string;
@@ -15,6 +15,7 @@ export interface SidebarTaskData {
     description: string;
     symbol: string;
     period: Period | "";
+    tradingHours?: TradingHours;
     start: string;
     end: string;
     selectedTradeIds: string[];
@@ -51,6 +52,7 @@ export function sidebarTaskFromApi(task: AnalysisTask): SidebarTaskData {
       description: task.description,
       symbol,
       period: period as Period,
+      tradingHours: config.trading_hours === "RTH" ? "RTH" : "ETH",
       start: String(config.start ?? "").slice(0, 16),
       end: String(config.end ?? "").slice(0, 16),
       selectedTradeIds: (config.selected_trade_ids as string[] | undefined) ?? [],

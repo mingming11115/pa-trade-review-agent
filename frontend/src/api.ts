@@ -6,6 +6,7 @@ import type {
   DemoAnalysisResponse,
   HealthResponse,
   HistoricalQuery,
+  TradingHours,
   MarketRange,
   Period,
   Trade,
@@ -82,9 +83,10 @@ export async function createReplaySession(payload:ReplayCreate, signal?:AbortSig
 export async function getReplaySession(id:string, signal?:AbortSignal):Promise<ReplaySession> {
   return parseResponse(await apiFetch(`/api/v1/replay/sessions/${encodeURIComponent(id)}`, {signal}));
 }
-export async function getReplayBars(id:string, period:Period, cursor?:string, signal?:AbortSignal, limit=500):Promise<{bars:Bar[];cursor?:string;source?:string;next_before?:string|null}> {
+export async function getReplayBars(id:string, period:Period, cursor?:string, signal?:AbortSignal, limit=500, tradingHours?:TradingHours):Promise<{bars:Bar[];cursor?:string;source?:string;next_before?:string|null}> {
   const params = new URLSearchParams({period,limit:String(limit)});
   if(cursor) params.set('cursor',cursor);
+  if(tradingHours) params.set('trading_hours',tradingHours);
   return parseResponse(await apiFetch(`/api/v1/replay/sessions/${encodeURIComponent(id)}/bars?${params}`, {signal}));
 }
 export async function getReplayEvents(id:string, offset=0, signal?:AbortSignal):Promise<ReplayEvents> {
@@ -102,8 +104,9 @@ export async function getMarketBars(
   signal?: AbortSignal,
   includePartial: boolean = false,
   requestKind: "live_poll" | "history_range" | "history_prefetch" | "future_prefetch" = "history_range",
+  tradingHours: TradingHours = "ETH",
 ): Promise<MarketRange> {
-  const params = new URLSearchParams({ symbol, period, start, end });
+  const params = new URLSearchParams({ symbol, period, start, end, trading_hours: tradingHours });
   if (includePartial) params.set("include_partial", "true");
   const url = `/api/v1/market/bars?${params.toString()}`;
   const requestId = createTraceId();
@@ -230,7 +233,7 @@ export async function listAnalysisTasks(): Promise<AnalysisTaskPage> {
   return parseResponse(await apiFetch("/api/v1/analysis-tasks?limit=200"));
 }
 
-export async function ensureLiveAnalysisTask(payload: { symbol: string; period: string; title?: string; }): Promise<AnalysisTask> {
+export async function ensureLiveAnalysisTask(payload: { symbol: string; period: string; title?: string; trading_hours?: TradingHours; }): Promise<AnalysisTask> {
   return parseResponse(await apiFetch("/api/v1/analysis-tasks/ensure-live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }));
 }
 

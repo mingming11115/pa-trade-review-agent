@@ -38,6 +38,7 @@ def build_stage1_frame(
             close=bar.close,
             volume=float(bar.volume or 0),
             closed=True,
+            trading_hours=bar.trading_hours,
         )
         for index, bar in enumerate(reversed(bars), start=1)
     ]

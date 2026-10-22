@@ -70,3 +70,105 @@ Drawing tools now occupy a reserved 44px vertical rail on the active chart left 
 - 最新后端全量：428 passed（`/private/tmp/pa-original-ui-all-tests-final.log`）。最新前端全量：375 passed / 44 files（`/private/tmp/pa-original-ui-frontend-final.log`）。最新构建通过（`/private/tmp/pa-original-ui-build-final.log`）。
 - 浏览器实际验证：原版 SVG、完整工具分组、弹出菜单以及原标注恢复正常；截图 `pa-original-drawing-ui.jpg`。原版 Image 选择入口能触发文件选择，但自动设置测试文件时浏览器控制返回失效节点，因此图片的实际上传／刷新链路未声称已完成浏览器验收；图片存储和失败路径有独立测试。
 - 最终限定复审确认图片持久化、编辑器互斥两项阻断已解决。
+
+## 2026-10-18 顶部按钮位置调整
+
+- 活动图工具栏通过 React portal 渲染到「时间定位联动」右侧，复用现有指标、回放和重置状态及处理函数；独立单图仍在原位显示。
+- `npm test -- --run src/TradingChart.indicators.test.tsx src/chartWorkspace/ChartWorkspace.test.tsx`：17 passed。新增实际 TradingChart 工具栏挂载测试，覆盖指标面板、回放面板、重置及隐藏清理。
+- `make build`：通过；存在包体大小提示。
+- `make frontend-test`：393 passed，1 failed。失败为 `ChartDrawingTools.test.tsx:90`，测试查询 `importFile` 返回 null，无法触发 change。
+- 单独运行 `npm test -- --run src/chartWorkspace/ChartDrawingTools.test.tsx`：7 passed，1 failed，复现同一错误。该测试直接渲染画线工具，不加载本次修改的 TradingChart/ChartWorkspace；本次未修改画线导入实现及测试。
+- 日志：`/private/tmp/pa-toolbar-focused-tests.log`、`/private/tmp/pa-toolbar-frontend-tests.log`、`/private/tmp/pa-toolbar-build.log`、`/private/tmp/pa-toolbar-drawing-tests.log`。
+- 未进行浏览器视觉验收；未修改后端，未运行后端测试。
+
+## 活动图切换重复加载修复（2026-10-18）
+
+- 修复前新增 App 集成测试失败：首次四图 4 个行情请求，点击其他图后累计 8 个请求。
+- 将 SessionState.activePeriod（选中图和分析目标）与 period（源行情周期）分开，ChartWorkspace.sourcePeriod 保持批次与图表身份稳定；恢复任务／历史结果或顶部主动改周期时清理活动周期覆盖。
+- 新增回归验证：连续点击四个槽位不增加行情请求、不清空 K 线、不改变各槽位 chartKey；一键分析 ensure-live 使用所选 15m；顶部修改 30m 正常加载。
+- 最新局部检查：App 与 ChartWorkspace 45 项通过；包含 ChartDrawingTools 的相关检查为 52 passed、1 failed，失败为异步导入测试找不到 importFile 元素。
+- make test：解除沙箱对本机测试数据库连接的限制后，后端 437 passed；当次前端 391 passed、2 failed（回放指标按钮测试与画线异步导入测试）。回放指标按钮测试在随后相关测试重跑中通过。
+- make build 通过，有现有 bundle 大小警告；git diff --check 通过。未执行本次浏览器手动验收。
+
+### 补充回归与评审
+
+- App + ChartWorkspace 最新局部检查：46 passed。增加顶部切回源周期、非源周期独立补历史的红灯／绿灯证据。
+- 后续全量前端检查为 394 passed、1 failed；剩余失败为 ChartDrawingTools 异步导入测试找不到 importFile，未改动该导入实现或测试。
+- 非源周期历史请求使用批次 AbortController 生命周期取消，按当前批次身份仅合并目标周期。
+- 独立只读评审确认无当前可达路径阻断项；评审最初指出的历史分析路径经调用搜索确认目前无 UI 调用，已撤回为现行 UI 回归的判断。仍防御不同周期分析结果覆盖已有源行情。
+
+## 固定布局与共享画线栏（2026-10-18）
+
+- 根因：双图 visible 使用 [active,(active+1)%4] 导致点击即重排；活动图内部画线 UI 通过 :has 附加边距导致绘图区挪动。
+- 双图改为固定 [0,1]；画线 UI portal 到整组外侧固定容器，保留原版工具和管理器。新增 chartContainer 适配原版编辑器 chartWrap 的坐标，ResizeObserver 追踪尺寸。
+- 固定双图、共享容器、四转双活动周期与窄屏双图回归均先观察失败。最新 App + ChartWorkspace 49 passed。
+- make frontend-test：398 passed、1 failed，剩余为既有异步导入测试找不到 importFile。make build 通过，有 bundle 大小警告。
+- 独立评审发现窄屏双图可激活隐藏槽位，已限制窄屏标签为两个槽位并补充回归。
+- 浏览器实测：双图左 1m / 右 5m，切换前后绘图区 x=296/576、y=392.1875、width=276、height=280 完全相同。四图上下行 y=392.1875/723.1875，点击第四图前后坐标不变。四转双自动选第一图，顶部周期为 1m。
+- 验收截图：/private/tmp/pa-fixed-double-layout.png。
+- 参考 TradingView 官方文档：https://www.tradingview.com/charting-library-docs/latest/trading_terminal/multiple-chart-layout/ ，固定 chart index 与 activeChart 分离。
+
+## 独立周期选择修复（2026-10-18）
+
+- 根因：selectedPeriod effect 根据周期值 findIndex，把顶部操作路由到使用该周期的其他槽位；顶部选择同时改变全局源行情。
+- 修改：周期更新只修改当前槽位；图内 select 修改自身槽位并激活它；顶部更新 activePeriod，初次尚无源周期时才初始化源行情。允许重复周期。十字线和时间定位开关保持原有独立行为。
+- 红灯：匹配兄弟周期时活动槽位错误，App 和 ChartWorkspace 两项测试失败。修复后 App + ChartWorkspace 50 passed。新回归覆盖顶部与兄弟同周期、右图改30m不影响左5m、直接修改非活动左图15m不影响右30m。
+- make frontend-test：399 passed、1 failed，剩余仍为既有异步导入找不到 importFile；make build 通过，存在 bundle 大小警告。独立只读评审无阻断项。
+- 浏览器实际修改左图为5m保持左图选中，然后改右图为30m，DOM 明确为左5m／右30m；截图 /private/tmp/pa-independent-periods.png。
+
+
+## 2026-10-22 回放启动布局修复
+
+- 首次新增测试失败：设置区仍在单图容器里，公共 host 不包含 K 线回放面板。修复后同一测试通过，并验证开始按钮提交原起点、非活动图不残留设置区。
+- `npm test -- --run src/TradingChart.indicators.test.tsx src/chartWorkspace/ChartWorkspace.test.tsx src/App.test.tsx`：63 passed。
+- `make test`：沙箱阻止本机数据库连接，获准在沙箱外重跑后后端 437 passed，前端 402 passed / 1 failed。
+- 前端失败：`ChartDrawingTools.test.tsx > does not report a successful async import while loading would discard it`，找不到 `importFile`，`fireEvent.change` 没有目标 DOM。此前验证文档已有同类失败记录；未修改该导入逻辑。
+- `make build`：通过，保留已有 bundle 大小提示。
+- 浏览器（Chrome，127.0.0.1:5174）：设置区位于整组四图上方，资金文字可读；点击开始回放后四图行边界对齐，播放、下一根、推进周期、时间和退出完整可见。实际行情起点为 2026-10-05T22:25:00Z，未下单。
+- 前后端原开发服务已停止，为验收恢复 5174 前端及 8000 后端；后端关闭行情采集和实时 WebSocket 循环。
+- 尚未人工覆盖窄屏及展开可选设置时的布局。
+- 独立只读评审：本次 portal、共享容器、高度样式及新增回归测试无阻断发现。
+
+## 2026-10-22 四图隐藏快捷下单
+
+- 仅在实际四图布局对 `.chart-quick-trade` 设置 `display:none`；单图和双图仍使用原有规则。
+- 回放相关两文件 Vitest：65 passed；构建通过。
+- 前端全量：402 passed / 1 failed，仍是已记录的 ChartDrawingTools 异步导入测试。
+- Chrome 可访问性状态确认四图无 BUY/SELL 及手数输入，持仓、平仓、添加 TP/SL 和回放控制仍在。切双图验证遇到原生自动化超时，未宣称人工覆盖。
+
+## 2026-10-22 四图高度调整
+
+- 根据用户反馈，将四图绘图区最小高度从 160px 恢复为 280px，允许页面滚动。仅改 CSS。
+- `make build` 通过；本轮未人工复查浏览器，未重跑逻辑测试。
+
+## 2026-10-22 回放控制栏深色
+
+- 紧凑控制栏黑底浅字，按钮悬停、下拉框、时间文字与键盘焦点同步使用深色主题。
+- `make build` 通过；`npm test -- --run src/replay/ChartReplayTrading.test.tsx`：35 passed。仅改 CSS，未新增镜像样式断言，未人工覆盖浏览器。
+
+## 2026-10-22 回放启动白条与换行修正
+
+- 复现：5174 `/analysis/live`，四图点击回放出现白色横条，取消按钮独占下一行。共享设置区显式白底及平铺 flex 换行导致。
+- 修改：起点独立分组，开始/取消同一操作组；共享设置区深色网格布局，620px 以下单列，输入、菜单与焦点同步深色。
+- 新增操作组及取消回归测试，旧结构无法找到操作组而失败；设置明确历史日期后新结构测试通过。
+- 局部 `npm test -- --run src/replay/ChartReplayTrading.test.tsx src/TradingChart.test.tsx src/chartWorkspace/ChartWorkspace.test.tsx`：61 passed。
+- `make frontend-test`：403 passed / 1 failed。仍为既有 `ChartDrawingTools.test.tsx > does not report a successful async import while loading would discard it`，缺少 importFile 节点，非本次修改范围。
+- `make build`：退出码 0，有既有大包体积提示。未改后端，未重跑后端测试。
+- 浏览器在当前 728px 宽页面确认深色启动区、日期/时区、展开/折叠选填设置、开始/取消排列。620px 以下规则已代码检查，未人工覆盖该尺寸。
+- 截图 `/private/tmp/pa-replay-setup-fixed.png`；命令日志 `/private/tmp/pa-replay-setup-{local,all,build}.log`。
+- 独立只读评审检查 JSX 分组、CSS 覆盖关系和窄屏布局，无阻断问题；`git diff --check` 退出码 0。
+
+## 2026-10-22 去掉回放图内标题毛玻璃
+
+- 实际启动回放复现“ES · 1m · 回放”的白色光晕；根因为 chartTrading.css 中两层 `0 0 5px #fff` 的 text-shadow。删除阴影，标题颜色改为 #dbdbdb。
+- `npm test -- --run src/replay/ReplayChartOverlay.test.tsx src/replay/ChartReplayTrading.test.tsx`：66 passed；`make build`：退出码 0（原有大包提示）。
+- `make frontend-test`：402 passed / 2 failed。既有 `ChartDrawingTools.test.tsx > does not report a successful async import while loading would discard it` 缺少 importFile；另有 `TradingChart.indicators.test.tsx > uses only the current replay prefix, advances indicators and restores them on exit` 全量时未及时更新 MA 数据。
+- 单独复验 `npm test -- --run src/TradingChart.indicators.test.tsx`：11 passed，指标问题在该次单独运行中未复现；未修改这两处测试或业务代码。
+- 浏览器确认回放标题清晰且无白色光晕。截图 `/private/tmp/pa-replay-heading-fixed.png`；日志 `/private/tmp/pa-replay-heading-{tests,build,all,indicators}.log`。仅修改两行样式，未新增镜像样式测试，未运行后端测试。
+
+## 2026-10-22 移除回放图内标题（用户纠正）
+
+- 移除 ReplayChartOverlay 的整组品种/周期/回放标题及图标；删除相关 CSS 与 IndicatorLegend 的标题避让选择器。
+- 相关 `ReplayChartOverlay`、`ChartReplayTrading`、`IndicatorLegend` Vitest：72 passed；`make build` 退出码 0；`git diff --check` 退出码 0。
+- `make frontend-test`：403 passed / 1 failed，仍为既有 `ChartDrawingTools.test.tsx > does not report a successful async import while loading would discard it`；本轮回放指标测试通过。
+- 当前页面确认图内标题整组消失，指标图例恢复顶部位置；截图 `/private/tmp/pa-replay-no-heading.png`。日志 `/private/tmp/pa-replay-no-heading-{tests,build,all}.log`。

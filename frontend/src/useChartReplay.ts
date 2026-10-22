@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { lookbackDurationMs, mergeBars } from './feed';
-import type { Bar, Period } from './types';
+import { lookbackDurationMs, mergeBars, tradingRangeLimitMs } from './feed';
+import { inTradingHours } from './tradingHours';
+import type { Bar, Period, TradingHours } from './types';
 
 export type ReplayLoader = (start: string, end: string, signal: AbortSignal) => Promise<Bar[]>;
 
-export function useChartReplay(key: string, period: Period | '' | undefined, offset: number, load?: ReplayLoader) {
+export function useChartReplay(key: string, period: Period | '' | undefined, offset: number, load?: ReplayLoader, tradingHours: TradingHours = "ETH", symbol = "") {
   const [data, setData] = useState<Bar[] | null>(null);
   const [index, setIndex] = useState(0);
   const [playing, setPlayingState] = useState(false);
@@ -81,15 +82,21 @@ export function useChartReplay(key: string, period: Period | '' | undefined, off
     try {
       for (let attempt = 0; attempt < (earliest === undefined ? 1 : 5); attempt += 1) {
         const time = pickTime();
+        const beforeSpan = lookbackDurationMs(period, 100, tradingHours);
+        const afterSpan = lookbackDurationMs(period, 20, tradingHours);
+        const rangeLimit = tradingHours === "RTH" ? tradingRangeLimitMs(period) : Infinity;
         const loaded = mergeBars([], await request(
-          new Date(time - lookbackDurationMs(period, 100)).toISOString(),
-          new Date(Math.min(Date.now(), time + lookbackDurationMs(period, 20))).toISOString(),
+          new Date(time - Math.min(beforeSpan, rangeLimit * 0.8)).toISOString(),
+          new Date(Math.min(Date.now(), time + Math.min(afterSpan, rangeLimit * 0.2))).toISOString(),
         ));
         if (token !== generation.current) return;
         const before = loaded.filter(bar => Date.parse(bar.timestamp) <= time);
-        const tip = before[before.length - 1];
+        const nextIndex = tradingHours === "RTH" && !inTradingHours(new Date(time).toISOString(), symbol, tradingHours)
+          ? loaded.findIndex(bar => Date.parse(bar.timestamp) >= time)
+          : before.length - 1;
+        const tip = loaded[nextIndex];
         if (!tip || (earliest !== undefined && Date.parse(tip.timestamp) < earliest)) continue;
-        setData(loaded); setIndex(before.length - 1);
+        setData(loaded); setIndex(nextIndex);
         return Date.parse(tip.timestamp);
       }
       setError(earliest === undefined
@@ -111,7 +118,7 @@ export function useChartReplay(key: string, period: Period | '' | undefined, off
       const last = Date.parse(data[data.length - 1].timestamp);
       // Search bounded, expanding windows so weekends do not trap playback.
       let cursor = last;
-      let span = lookbackDurationMs(period, 50);
+      let span = lookbackDurationMs(period, 50, tradingHours);
       const horizon = Math.min(Date.now(), last + Math.max(span, 7 * 24 * 60 * 60 * 1000));
       let later: Bar[] = [];
       for (let attempt = 0; attempt < 5 && cursor < horizon; attempt += 1) {

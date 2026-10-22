@@ -1,3 +1,4 @@
+import { canMarketTrade } from '../tradingHours';
 import { useId, useState, type KeyboardEvent } from 'react';
 import type { ReplayCommandInput, ReplayEvents, ReplayFill, ReplayOrder, ReplaySession } from '../types';
 import { ReplayResults } from './ReplayResults';
@@ -116,7 +117,7 @@ export function ReplayTradeDetails({ session, events, visibleFills, disabled, co
           <td className={`replay-ledger-number ${pnlClass(account.unrealized_pnl)}`}>{money(account.unrealized_pnl, true)}</td>
           <td className="replay-ledger-number">{price(position.take_profit, tick)}</td><td className="replay-ledger-number">{price(position.stop_loss, tick)}</td>
           <td><div className="replay-ledger-actions"><button type="button" aria-expanded={editingProtection} onClick={() => { onPause(); setEditingProtection(open => !open); }}>修改保护价</button>
-            <button type="button" disabled={disabled} onClick={() => void command({ type: 'place_order', kind: 'market', reduce_only: true, side: position.quantity > 0 ? 'sell' : 'buy', quantity: Math.abs(position.quantity) })}>提交全部平仓</button></div></td>
+            <button type="button" disabled={disabled || !canMarketTrade(session)} onClick={() => void command({ type: 'place_order', kind: 'market', reduce_only: true, side: position.quantity > 0 ? 'sell' : 'buy', quantity: Math.abs(position.quantity) })}>提交全部平仓</button></div></td>
         </tr> : <tr><td colSpan={7} className="replay-ledger-empty">当前空仓</td></tr>}</tbody>
       </table></div>
       {!!position.quantity && editingProtection && <ProtectionForm key={`${position.quantity}:${position.stop_loss}:${position.take_profit}`} session={session} disabled={disabled} command={command} onCancel={() => setEditingProtection(false)} />}

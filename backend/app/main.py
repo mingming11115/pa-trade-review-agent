@@ -30,7 +30,7 @@ from app.core.logging_context import (
     reset_trace_context,
     set_trace_context,
 )
-from app.core.models import DemoAnalysisResponse, HealthResponse, HistoricalQuery, Period
+from app.core.models import DemoAnalysisResponse, HealthResponse, HistoricalQuery, Period, TradingHours
 from app.core.user_context import reset_current_user_id, set_current_user_id
 from app.market.service import (
     CollectionStatus,
@@ -62,6 +62,7 @@ from app.personal.service import (
     save_settings,
 )
 from app.market.provider import MassiveHistoricalProvider
+from app.market.trading_hours import RTH_MAX_RANGE_DAYS
 from app.market.live import RealtimeTradeCollector
 from app.knowledge.routes import router as knowledge_router
 from app.knowledge.service import resolve_prompt_snapshot, get_or_create_run_prompt_snapshot
@@ -420,6 +421,7 @@ async def market_bars(
     start: datetime = Query(...),
     end: datetime = Query(...),
     include_partial: bool = Query(False),
+    trading_hours: TradingHours = Query("ETH"),
     provider: LocalFirstMarketProvider = Depends(get_provider),
 ) -> MarketRange:
     """查询指定标的和时间段内的 K 线数据，包含覆盖元数据。"""
@@ -427,7 +429,10 @@ async def market_bars(
         raise AppError("invalid_market_range", "结束时间必须晚于开始时间", 422)
     minutes = PERIOD_MINUTES[period]
     span_minutes = (end - start).total_seconds() / 60
-    if span_minutes > minutes * MARKET_BARS_MAX_COUNT:
+    max_rth_days = RTH_MAX_RANGE_DAYS[period]
+    if trading_hours == "RTH" and span_minutes > max_rth_days * 1440:
+        raise AppError("market_range_too_large", f"RTH {period} 单次查询最多 {max_rth_days} 天", 422)
+    if trading_hours == "ETH" and span_minutes > minutes * MARKET_BARS_MAX_COUNT:
         raise AppError(
             "market_range_too_large",
             f"单次查询最多约 {MARKET_BARS_MAX_COUNT} 根 {period} K 线",
@@ -438,10 +443,13 @@ async def market_bars(
         resolved = validate_kline_symbol(symbol)
     except ValueError as exc:
         raise AppError("unsupported_kline_symbol", str(exc), 422) from exc
-    query = HistoricalQuery(symbol=resolved, period=Period(period), start=start, end=end)
+    query = HistoricalQuery(symbol=resolved, period=Period(period), start=start, end=end, trading_hours=trading_hours)
     if not include_partial:
         await provider.get_range(query)
-    market_range = await query_market_range(resolved, period, start, end, include_partial=include_partial)
+    market_range = await query_market_range(resolved, period, start, end, include_partial=include_partial, trading_hours=trading_hours)
+    if trading_hours == "RTH" and len(market_range.bars) > MARKET_BARS_MAX_COUNT:
+        market_range = market_range.model_copy(update={"bars": market_range.bars[-MARKET_BARS_MAX_COUNT:]})
+        response.headers["X-Market-Truncated"] = "true"
     response.headers["X-Market-Bar-Count"] = str(len(market_range.bars))
     return market_range
 

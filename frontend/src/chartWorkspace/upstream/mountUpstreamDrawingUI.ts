@@ -9,7 +9,7 @@
  * module) for scripted checks; `window.autoText` answers the text editor
  * request without the editor.
  */
-import { cacheImage, decodeImage, isAnchorable, VERSION, type DrawingManager, type Drawing, type DrawingKind, type MagnetMode } from "lightweight-charts-drawing";
+import { cacheImage, decodeImage, isAnchorable, type DrawingManager, type Drawing, type DrawingKind, type MagnetMode } from "lightweight-charts-drawing";
 import { ICONS } from "./icons";
 import { TOOL_COUNT, TOOL_GROUPS, type ToolEntry } from "./tool-groups";
 import css from "./demo.css?raw";
@@ -33,18 +33,14 @@ const EMOJIS = ["🚀", "📈", "📉", "💰", "💵", "🔥", "⚡", "🎯", "
 
 /** Upstream demo UI, mechanically adapted to an existing manager and scoped DOM.
  * See README.md and demo.ts.txt for the unchanged source and provenance. */
-export function mountUpstreamDrawingUI(host: HTMLElement, dm: DrawingManager, options: { assetScope: string; saveImage: (name:string,file:Blob)=>Promise<void>; onEditorChange:(open:boolean)=>void; isEditable:()=>boolean }) {
+export function mountUpstreamDrawingUI(host: HTMLElement, dm: DrawingManager, options: { chartContainer?:HTMLElement; assetScope: string; saveImage: (name:string,file:Blob)=>Promise<void>; onEditorChange:(open:boolean)=>void; isEditable:()=>boolean }) {
  const root = host.shadowRoot ?? host.attachShadow({mode:"open"});
  const parsed = new DOMParser().parseFromString(html, "text/html");
  const style = document.createElement("style");
  style.textContent = css.replace(":root", ":host") + `
  :host { font:13px var(--font);color:var(--text);display:flex;flex-direction:column;pointer-events:none; }
- #top,#rail,#flyout,#selbar,#editor { pointer-events:auto; }
- #top,#rail,#status { background:var(--bg); }
- #top { flex:none;overflow-x:auto;white-space:nowrap; }
- /* PA already supplies the live symbol and interval. Hide the demo branding
-    and hard-coded SPY/1D sample, keeping every original action button. */
- #top .brand,#top .symbol { display:none; }
+ #rail,#flyout,#selbar,#editor { pointer-events:auto; }
+ #rail,#status { background:var(--bg); }
  #hint { min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis; }
  #count { flex:none; }
  #main { min-height:0; }
@@ -55,6 +51,18 @@ export function mountUpstreamDrawingUI(host: HTMLElement, dm: DrawingManager, op
  root.replaceChildren(style,...Array.from(parsed.body.children).filter(e=>e.tagName!=="SCRIPT"));
  const $ = <T extends HTMLElement>(id:string) => root.getElementById(id) as T;
  const cleanup:Array<()=>void> = [];
+ if(options.chartContainer){
+  const wrap=$('chartWrap'),target=options.chartContainer;
+  const align=()=>{
+   const parent=$('main').getBoundingClientRect(),bounds=target.getBoundingClientRect();
+   Object.assign(wrap.style,{position:'absolute',left:`${bounds.left-parent.left}px`,top:`${bounds.top-parent.top}px`,width:`${bounds.width}px`,height:`${bounds.height}px`});
+  };
+  align();
+  if(typeof ResizeObserver!=='undefined'){
+   const observer=new ResizeObserver(align);observer.observe(target);observer.observe(host);
+   cleanup.push(()=>observer.disconnect());
+  }
+ }
  let disposed=false;
  const timers=new Set<ReturnType<typeof setTimeout>>();
  const later=(fn:()=>void,ms=0)=>{const timer=setTimeout(()=>{timers.delete(timer);if(!disposed)fn();},ms);timers.add(timer);return timer;};
@@ -63,11 +71,6 @@ export function mountUpstreamDrawingUI(host: HTMLElement, dm: DrawingManager, op
  };
  const subscribe = dm.on.bind(dm) as (event:string,fn:(...args:never[])=>void)=>()=>void;
  const watch = ((event:string,fn:(...args:never[])=>void)=>{const off=subscribe(event,fn);cleanup.push(off);return off;}) as DrawingManager["on"];
-
-  $("version").textContent = `v${VERSION}`;
-  $("github").innerHTML = ICONS.github;
-  $("export").innerHTML = `${ICONS.download}Export`;
-  $("import").innerHTML = `${ICONS.upload}Import`;
 
   // ---- status line
   let note = "";
@@ -351,33 +354,5 @@ export function mountUpstreamDrawingUI(host: HTMLElement, dm: DrawingManager, op
     afterRelease(() => openEditor(box.left, box.top, box.width, cells?.[cell[0]]?.[cell[1]] ?? "", (t) => { dm.setTableCellText(d.id, cell, t); dm.endTableEdit(); }, () => dm.endTableEdit()));
   });
 
-  // ---- export / import as JSON files
-  $("export").onclick = () => {
-    const n = dm.drawings().length;
-    if (!n) return flash("Nothing to export: draw something first.");
-    const url = URL.createObjectURL(new Blob([dm.exportJSON()], { type: "application/json" }));
-    const a = el("a");
-    a.href = url;
-    a.download = `drawings-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    later(() => URL.revokeObjectURL(url), 1000);
-    flash(`Exported <b>${n}</b> drawing${n === 1 ? "" : "s"} to ${a.download}.`);
-  };
-  const importFile = $<HTMLInputElement>("importFile");
-  $("import").onclick = () => importFile.click();
-  importFile.onchange = async () => {
-    const f = importFile.files?.[0];
-    importFile.value = "";
-    if (!f) return;
-    try {
-      const text = await f.text();
-      if (disposed) return;
-      if (!options.isEditable()) { flash("Chart is busy. Please import again when loading finishes."); return; }
-      const n = dm.importJSON(text);
-      flash(`Imported <b>${n}</b> drawing${n === 1 ? "" : "s"} from ${f.name}.`);
-    } catch (err) {
-      flash(`Could not read ${f.name}: ${(err as Error).message}`);
-    }
-  };
  return ()=>{options.onEditorChange(false);disposed=true;for(const off of cleanup)off();for(const timer of timers)clearTimeout(timer);root.replaceChildren();};
 }

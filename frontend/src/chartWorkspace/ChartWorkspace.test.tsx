@@ -5,7 +5,7 @@ import type { Bar, Period } from '../types';
 
 const api=vi.hoisted(()=>({getMarketBars:vi.fn()}));
 vi.mock('../api',()=>api);
-vi.mock('../TradingChart',()=>({TradingChart:({period,bars}:{period:Period;bars:Bar[]})=><div data-testid={`bars-${period}`}>{bars.map(b=>b.close).join(',')}</div>}));
+vi.mock('../TradingChart',()=>({TradingChart:({period,bars,onNeedHistory}:{period:Period;bars:Bar[];onNeedHistory?:(start:string,end:string)=>void|Promise<void>})=><div data-testid={`bars-${period}`}>{bars.map(b=>b.close).join(',')}{onNeedHistory&&<button onClick={()=>void onNeedHistory('2025-01-01T08:00:00Z','2025-01-01T10:00:00Z')}>history-{period}</button>}</div>}));
 vi.mock('./chartSync',()=>({createChartSync:()=>({register:()=>()=>{},update(){},setOptions(){},dispose(){}})}));
 const bar:Bar={timestamp:'2025-01-01T10:00:00Z',open:100,high:101,low:99,close:100,volume:10};
 beforeEach(()=>{
@@ -65,11 +65,75 @@ it('notifies the parent of a restored active timeframe without another click',()
  expect(onPeriodChange).toHaveBeenCalledWith('1h');
 });
 
-it('honors later parent period changes instead of restoring over the top-level selector',()=>{
+it('applies the top-level period to the selected slot even if another slot already uses it',()=>{
  const onPeriodChange=vi.fn();
  const props={symbol:'ES',bars:[bar],period:'1m' as const,chartKey:'top',onPeriodChange};
  const view=render(<ChartWorkspace {...props}/>);
  view.rerender(<ChartWorkspace {...props} period="5m"/>);
- expect(screen.getByRole('button',{name:'选中图表 2'})).toHaveAttribute('aria-pressed','true');
+ expect(screen.getByRole('button',{name:'选中图表 1'})).toHaveAttribute('aria-pressed','true');
+ expect(screen.getByLabelText('图表 1 周期')).toHaveValue('5m');
+ expect(screen.getByLabelText('图表 2 周期')).toHaveValue('5m');
  expect(onPeriodChange).not.toHaveBeenCalled();
+});
+
+it('loads all supplemental timeframes using the selected RTH session',async()=>{
+ const regular={...bar,timestamp:'2026-07-06T13:30:00Z',trading_hours:'RTH' as const};
+ render(<ChartWorkspace symbol="ES" bars={[regular]} period="1m" tradingHours="RTH" chartKey="rth"/>);
+ await waitFor(()=>expect(api.getMarketBars).toHaveBeenCalledTimes(3));
+ expect(api.getMarketBars.mock.calls.every(call=>call[7]==='RTH')).toBe(true);
+});
+
+it('loads older candles only for the selected secondary pane without reloading the other periods',async()=>{
+ const source=[bar];
+ render(<ChartWorkspace symbol="ES" bars={source} sourcePeriod="1m" period="5m" chartKey="stable"/>);
+ await waitFor(()=>expect(screen.getByTestId('bars-1h')).toHaveTextContent('100'));
+ api.getMarketBars.mockClear();
+ api.getMarketBars.mockResolvedValue({bars:[{...bar,timestamp:'2025-01-01T09:55:00Z',close:90}]});
+ fireEvent.click(screen.getByRole('button',{name:'history-5m'}));
+ await waitFor(()=>expect(screen.getByTestId('bars-5m')).toHaveTextContent('90,100'));
+ expect(api.getMarketBars).toHaveBeenCalledTimes(1);
+ expect(api.getMarketBars.mock.calls[0][1]).toBe('5m');
+ expect(screen.getByTestId('bars-1h')).toHaveTextContent('100');
+ expect(screen.getByTestId('bars-1m')).toHaveTextContent('100');
+});
+
+it('keeps the two chart slots in place when selecting either pane without reloading',async()=>{
+ render(<ChartWorkspace symbol="ES" bars={[bar]} sourcePeriod="1m" period="1m" chartKey="fixed-double"/>);
+ await waitFor(()=>expect(screen.getByTestId('bars-1h')).toHaveTextContent('100'));
+ fireEvent.click(screen.getByRole('button',{name:'双图'}));
+ await waitFor(()=>expect(screen.queryByText('正在同步行情…')).not.toBeInTheDocument());
+ const panes=screen.getAllByRole('region');
+ const calls=api.getMarketBars.mock.calls.length;
+ for(const index of [2,1,2]){
+  fireEvent.pointerDown(screen.getByRole('button',{name:`选中图表 ${index}`}));
+  expect(screen.getAllByRole('region')).toEqual(panes);
+  expect(screen.getAllByRole('region').map(pane=>pane.getAttribute('aria-label'))).toEqual(['ES · 1m 图表','ES · 5m 图表']);
+  expect(screen.getByRole('button',{name:`选中图表 ${index}`})).toHaveAttribute('aria-pressed','true');
+ }
+ expect(api.getMarketBars).toHaveBeenCalledTimes(calls);
+});
+
+it('selects a visible fixed slot when switching from the fourth pane to two charts',async()=>{
+ const onPeriodChange=vi.fn();
+ render(<ChartWorkspace symbol="ES" bars={[bar]} sourcePeriod="1m" period="1m" chartKey="layout-four-to-two" onPeriodChange={onPeriodChange}/>);
+ await waitFor(()=>expect(screen.getByTestId('bars-1h')).toHaveTextContent('100'));
+ fireEvent.click(screen.getByRole('button',{name:'选中图表 4'}));
+ onPeriodChange.mockClear();
+ fireEvent.click(screen.getByRole('button',{name:'双图'}));
+ expect(screen.getByRole('button',{name:'选中图表 1'})).toHaveAttribute('aria-pressed','true');
+ expect(onPeriodChange).toHaveBeenCalledWith('1m');
+});
+
+it('exposes only the two fixed slots in narrow dual layout and preserves selection on widening',async()=>{
+ let resize!:(entries:Array<{contentRect:{width:number}}>)=>void;
+ vi.stubGlobal('ResizeObserver',class{constructor(callback:typeof resize){resize=callback;}observe(){}disconnect(){}});
+ render(<ChartWorkspace symbol="ES" bars={[bar]} sourcePeriod="1m" period="1m" chartKey="responsive-dual"/>);
+ fireEvent.click(screen.getByRole('button',{name:'双图'}));
+ act(()=>resize([{contentRect:{width:500}}]));
+ const tabs=screen.getByRole('group',{name:'选择活动周期'});
+ expect(tabs.querySelectorAll('button')).toHaveLength(2);
+ fireEvent.click(tabs.querySelectorAll('button')[1]);
+ act(()=>resize([{contentRect:{width:900}}]));
+ expect(screen.getByRole('button',{name:'选中图表 2'})).toHaveAttribute('aria-pressed','true');
+ expect(screen.getAllByRole('region')).toHaveLength(2);
 });

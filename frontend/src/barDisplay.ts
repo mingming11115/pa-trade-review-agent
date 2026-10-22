@@ -8,7 +8,7 @@ function formatMarketTime(ref: BarRef): string {
 }
 
 export function formatBarRef(ref: BarRef): string {
-  return `#${ref.day_index} · ${formatMarketTime(ref)} · ${ref.timeframe}`;
+  return `${ref.trading_hours === "RTH" ? "RTH · " : ""}#${ref.day_index} · ${formatMarketTime(ref)} · ${ref.timeframe}`;
 }
 
 export function formatBarRange(range: BarRange | null | undefined): string {

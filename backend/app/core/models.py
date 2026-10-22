@@ -6,6 +6,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+TradingHours = Literal["ETH", "RTH"]
+
 
 class Direction(str, Enum):
     bullish = "bullish"
@@ -41,6 +43,7 @@ class HistoricalQuery(BaseModel):
     dataset: str = Field(default="GLBX.MDP3", min_length=1, max_length=100)
     symbol: str = Field(min_length=1, max_length=100)
     period: Period = Period.minute_1
+    trading_hours: TradingHours = "ETH"
     provider_schema: str = Field(
         default="ohlcv-1m",
         alias="schema",
@@ -60,13 +63,14 @@ class HistoricalQuery(BaseModel):
         if self.end <= self.start:
             raise ValueError("end must be later than start")
         self.provider_schema = (
-            "ohlcv-1d" if self.period is Period.day_1 else "ohlcv-1m"
+            "ohlcv-1d" if self.period is Period.day_1 and self.trading_hours == "ETH" else "ohlcv-1m"
         )
         return self
 
 
 class Bar(BaseModel):
     timestamp: datetime
+    trading_hours: TradingHours = "ETH"
     timeframe: str | None = None
     session: Literal["CME", "US_EQUITY_RTH"] | None = None
     day_index: int | None = Field(default=None, ge=1)

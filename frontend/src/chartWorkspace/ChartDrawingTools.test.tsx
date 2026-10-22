@@ -95,3 +95,11 @@ it('does not report a successful async import while loading would discard it',as
  view.rerender(<ChartDrawingTools {...props}/>);
  expect(native.managers[0].drawings()).toHaveLength(0);
 });
+
+it('places the drawing UI outside the active chart in the shared workspace rail',()=>{
+ const ctx=context(),toolbar=document.createElement('div');document.body.append(toolbar);
+ const view=render(<ChartDrawingTools context={ctx} scope="shared-rail" period="5m" active toolbarContainer={toolbar}/>);
+ expect(toolbar.querySelector('[data-chart-drawing-ui]')).not.toBeNull();
+ expect(ctx.container.querySelector('[data-chart-drawing-ui]')).toBeNull();
+ view.unmount();expect(toolbar.childElementCount).toBe(0);toolbar.remove();
+});

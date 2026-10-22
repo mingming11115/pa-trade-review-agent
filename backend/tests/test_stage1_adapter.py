@@ -94,7 +94,7 @@ def test_original_prompt_uses_ordered_system_and_task_files() -> None:
     assert system.index("【角色指令】") < system.index("# 交易二元决策树")
     assert user.index("# 市场诊断框架（三层递进）") < user.index("【文件定位】本文件职责：K线信号")
     assert "程序预填充节点判断依据" in user
-    assert "bar_timestamp | timeframe | session | day_index" in user
+    assert "bar_timestamp | timeframe | session | trading_hours | day_index" in user
     assert not re.search(r"\bK\d+", user)
     assert frame.bars[0].close == _bars()[-1].close
     assert frame.bars[0].seq == 1

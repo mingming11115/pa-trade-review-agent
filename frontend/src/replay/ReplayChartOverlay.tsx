@@ -1,3 +1,4 @@
+import { canMarketTrade } from '../tradingHours';
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { LineStyle } from 'lightweight-charts';
@@ -292,7 +293,7 @@ export function ReplayChartOverlay(props: Props) {
 
   async function closePosition() {
     const now = latest.current;
-    if (!canInteract() || drag.current || !now.session.state.position.quantity) return;
+    if (!canInteract() || !canMarketTrade(now.session) || drag.current || !now.session.state.position.quantity) return;
     submittingRef.current = true;
     setSubmitting('close');
     setError('');
@@ -311,7 +312,7 @@ export function ReplayChartOverlay(props: Props) {
   async function marketOrder(side: 'buy' | 'sell') {
     const now = latest.current;
     const quantity = now.quantity;
-    if (!canInteract() || drag.current || !Number.isInteger(quantity) || quantity < 1 || quantity > 100000 ||
+    if (!canInteract() || !canMarketTrade(now.session) || drag.current || !Number.isInteger(quantity) || quantity < 1 || quantity > 100000 ||
       now.session.state.last_price == null || !Number.isFinite(Number(now.session.state.last_price))) return;
     submittingRef.current = true;
     setSubmitting('order');
@@ -351,7 +352,7 @@ export function ReplayChartOverlay(props: Props) {
   }
 
   function order(side: 'buy' | 'sell', kind: ReplayOrder['kind'] | null) {
-    if (!menu || !kind || !root.current || !canInteract()) return;
+    if (!menu || !kind || !root.current || !canInteract() || (kind === "market" && !canMarketTrade(latest.current.session))) return;
     onOrder({side,kind,price:menu.price,anchor:{x:menu.x,y:menu.y},container:root.current});
     setMenu(null);
   }
@@ -368,14 +369,10 @@ export function ReplayChartOverlay(props: Props) {
   const menuHeight = Math.min(measuredMenuHeight,Math.max(0,pane.height-8));
   return <div ref={root} className="replay-chart-overlay" data-testid="replay-chart-overlay" hidden={hidden}>
     {!hidden && <>
-      <div className="chart-trading-heading" style={{maxWidth:Math.max(0,pane.width-24)}}>
-        <strong>{session.symbol}</strong>{props.period && <><span className="chart-heading-dot">·</span><span>{props.period}</span></>}
-        <span className="chart-replay-badge" title="历史行情回放"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m8 4-4 4 4 4V4Zm4 0L8 8l4 4V4Z" fill="currentColor"/></svg><span>回放</span></span>
-      </div>
       <div ref={quickTrade} className="chart-quick-trade" role="group" aria-label="图上快捷下单" style={{top:quickTop,maxWidth:Math.max(0,pane.width-16)}} onPointerDown={event=>event.stopPropagation()} onContextMenu={event=>{event.preventDefault();event.stopPropagation();}}>
         <div className="chart-quick-quotes">
-          <button type="button" className="chart-quick-sell" aria-label="市价卖出 SELL" disabled={unavailable || dragging || !validQuantity || !validPrice} title="按当前回放价市价卖出，成交包含配置的滑点与手续费" onClick={()=>void marketOrder('sell')}><strong>{quotePrice}</strong><span>SELL</span></button>
-          <button type="button" className="chart-quick-buy" aria-label="市价买入 BUY" disabled={unavailable || dragging || !validQuantity || !validPrice} title="按当前回放价市价买入，成交包含配置的滑点与手续费" onClick={()=>void marketOrder('buy')}><strong>{quotePrice}</strong><span>BUY</span></button>
+          <button type="button" className="chart-quick-sell" aria-label="市价卖出 SELL" disabled={unavailable || dragging || !validQuantity || !validPrice || !canMarketTrade(session)} title="按当前回放价市价卖出，成交包含配置的滑点与手续费" onClick={()=>void marketOrder('sell')}><strong>{quotePrice}</strong><span>SELL</span></button>
+          <button type="button" className="chart-quick-buy" aria-label="市价买入 BUY" disabled={unavailable || dragging || !validQuantity || !validPrice || !canMarketTrade(session)} title="按当前回放价市价买入，成交包含配置的滑点与手续费" onClick={()=>void marketOrder('buy')}><strong>{quotePrice}</strong><span>BUY</span></button>
         </div>
         <div className="chart-quick-options"><label className="chart-quick-quantity"><span>手数</span><input aria-label="快捷下单手数" type="number" min="1" max="100000" step="1" required value={Number.isFinite(props.quantity)?props.quantity:''} disabled={unavailable || dragging} onChange={event=>props.onQuantityChange(Number(event.target.value))}/></label><small title="历史行情没有独立买卖报价，两侧均使用当前回放价">回放价</small></div>
       </div>
@@ -383,7 +380,7 @@ export function ReplayChartOverlay(props: Props) {
         <span data-testid="chart-position-label" className={`chart-position-label ${Number(session.state.account.unrealized_pnl)>=0?'is-profit':'is-loss'}`}>
           {position.quantity>0?'多':'空'} {Math.abs(position.quantity)} 手 · 均价 {position.average_price} · {signedUsd(session.state.account.unrealized_pnl)}
         </span>
-        <button type="button" className="chart-position-close" aria-label="按市价全部平仓" title="按当前回放价全部平仓" disabled={unavailable || dragging}
+        <button type="button" className="chart-position-close" aria-label="按市价全部平仓" title="按当前回放价全部平仓" disabled={unavailable || dragging || !canMarketTrade(session)}
           onPointerDown={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();void closePosition();}}>平仓</button>
       </div>}
       {active && (['take_profit','stop_loss'] as const).map(field => {
@@ -399,8 +396,8 @@ export function ReplayChartOverlay(props: Props) {
         <button type="button" role="menuitem" aria-label={`卖出${sellKind==='stop_market'?'止损市价':'限价'} · ${menu.price}`} disabled={!sellKind || unavailable} onClick={()=>order('sell',sellKind)}><MenuIcon kind="sell"/><span>Sell {props.quantity} {session.symbol} @ {menuPrice}<small>{sellKind==='stop_market'?'止损市价':'限价'}</small></span></button>
         <button type="button" role="menuitem" aria-label={`买入${buyKind==='stop_market'?'止损市价':'限价'} · ${menu.price}`} disabled={!buyKind || unavailable} onClick={()=>order('buy',buyKind)}><MenuIcon kind="buy"/><span>Buy {props.quantity} {session.symbol} @ {menuPrice}<small>{buyKind==='stop_market'?'止损市价':'限价'}</small></span></button>
         <div className="chart-menu-separator" role="separator"/>
-        <button type="button" role="menuitem" aria-label="市价卖出" disabled={unavailable} onClick={()=>order('sell','market')}><MenuIcon kind="sell"/><span>Sell {props.quantity} {session.symbol}<small>市价卖出</small></span></button>
-        <button type="button" role="menuitem" aria-label="市价买入" disabled={unavailable} onClick={()=>order('buy','market')}><MenuIcon kind="buy"/><span>Buy {props.quantity} {session.symbol}<small>市价买入</small></span></button>
+        <button type="button" role="menuitem" aria-label="市价卖出" disabled={unavailable || !canMarketTrade(session)} onClick={()=>order('sell','market')}><MenuIcon kind="sell"/><span>Sell {props.quantity} {session.symbol}<small>市价卖出</small></span></button>
+        <button type="button" role="menuitem" aria-label="市价买入" disabled={unavailable || !canMarketTrade(session)} onClick={()=>order('buy','market')}><MenuIcon kind="buy"/><span>Buy {props.quantity} {session.symbol}<small>市价买入</small></span></button>
         <small>市价按当前回放价立即成交</small>
       </div>}
       {(pending || submitting) && <div className="chart-trading-status" role="status">{pending?'保护价或订单结果待确认，请重试确认':submitting==='close'?'正在平仓…':submitting==='order'?'正在提交市价单…':'正在提交保护价…'}</div>}
